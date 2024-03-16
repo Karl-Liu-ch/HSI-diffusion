@@ -1,5 +1,11 @@
 import sys
 sys.path.append('./')
+import os
+import numpy as np
+from torch.utils.data import Dataset
+
+from taming.data.base import ImagePaths, NumpyPaths, ConcatDatasetWithIndex
+
 from torch.utils.data import Dataset
 import numpy as np
 import random
@@ -13,19 +19,21 @@ import torch.nn as nn
 import scipy.io
 import re
 from dataset.data_augmentation import split_train, split_valid, split_test, split_full_test
-from utils import *
+# from utils import *
+from omegaconf import OmegaConf
+config_path = "configs/hsi_vqgan.yaml"
+cfg = OmegaConf.load(config_path)
+trainconfig = cfg.data.params.train.params
+validconfig = cfg.data.params.validation.params
 
-root = '/work3/s212645/Spectral_Reconstruction/clean/'
-datanames = ['CAVE/']
-datanames = ['BGU/','ARAD/']
-# datanames = ['ARAD/', 'BGU/']
-# datanames = ['CAVE/', 'ARAD/', 'BGU/']
+def Normalize(x):
+    return (x - x.min()) / (x.max() - x.min())
 
 class GetDataset(Dataset):
-    def __init__(self, data_root, crop_size, valid_ratio, test_ratio, arg=True, datanames = ['BGU/','ARAD/']):
+    def __init__(self, data_root, crop_size, valid_ratio, test_ratio, aug=True, datanames = ['ARAD/']):
         self.datanames = datanames
         self.crop_size = crop_size
-        self.arg = arg
+        self.aug = aug
         self.rgb = []
         self.hyper = []
 
@@ -40,16 +48,15 @@ class GetDataset(Dataset):
         for j in range(hFlip):
             img = img[:, ::-1, :].copy()
         return img
-
+    
     def __getitem__(self, idx):
+        ex = {}
         bgr = self.rgb[idx]
         rgb = np.copy(bgr)
-        # rgb = Normalize(rgb)
+        rgb = Normalize(rgb)
         rgb = np.transpose(rgb, [2, 0, 1])
-        # bgr = Image256(bgr)
         ycrcb = Normalize(cv2.cvtColor(bgr, cv2.COLOR_RGB2YCrCb))
-        # ycrcb = bgr
-        # bgr = Normalize(ycrcb)
+        bgr = Normalize(bgr)
         bgr = np.concatenate([bgr, ycrcb], axis=2)
         hyper = self.hyper[idx]
         bgr = np.transpose(bgr, [2, 0, 1])
@@ -57,17 +64,21 @@ class GetDataset(Dataset):
         rotTimes = random.randint(0, 3)
         vFlip = random.randint(0, 1)
         hFlip = random.randint(0, 1)
-        if self.arg:
+        if self.aug:
             bgr = self.augmentation(bgr, rotTimes, vFlip, hFlip)
+            rgb = self.augmentation(rgb, rotTimes, vFlip, hFlip)
             hyper = self.augmentation(hyper, rotTimes, vFlip, hFlip)
-        return np.ascontiguousarray(bgr), np.ascontiguousarray(hyper), np.ascontiguousarray(rgb)
+        ex["label"] = np.ascontiguousarray(hyper)
+        ex["cond"] = np.ascontiguousarray(rgb)
+        ex["ycrcb"] = np.ascontiguousarray(bgr)
+        return ex
 
     def __len__(self):
         return self.length
 
 class TrainDataset(GetDataset):
-    def __init__(self, data_root, crop_size, valid_ratio, test_ratio, arg=True, datanames = ['BGU/','ARAD/']):
-        super().__init__(data_root, crop_size, valid_ratio, test_ratio, arg=arg, datanames = datanames)
+    def __init__(self, *, data_root, crop_size, valid_ratio, test_ratio, aug=True, datanames = ['ARAD/'], **ignore_kwargs):
+        super().__init__(data_root, crop_size, valid_ratio, test_ratio, aug=aug, datanames = datanames)
         self.trainset = []
         for name in self.datanames:
             self.trainset.append(split_train(data_root+ 'clean/' + name,valid_ratio=valid_ratio, test_ratio=test_ratio, imsize=self.crop_size))
@@ -77,8 +88,8 @@ class TrainDataset(GetDataset):
         self.length = len(self.hyper)
 
 class TestDataset(GetDataset):
-    def __init__(self, data_root, crop_size, valid_ratio, test_ratio, arg=False, datanames = ['BGU/','ARAD/']):
-        super().__init__(data_root, crop_size, valid_ratio, test_ratio, arg=arg, datanames = datanames)
+    def __init__(self, *, data_root, crop_size, valid_ratio, test_ratio, aug=True, datanames = ['ARAD/'], **ignore_kwargs):
+        super().__init__(data_root, crop_size, valid_ratio, test_ratio, aug=aug, datanames = datanames)
         self.testset = []
         for name in self.datanames:
             self.testset.append(split_test(data_root+ 'clean/' + name, valid_ratio= valid_ratio, test_ratio=test_ratio, imsize=self.crop_size))
@@ -88,8 +99,8 @@ class TestDataset(GetDataset):
         self.length = len(self.hyper)
 
 class TestFullDataset(GetDataset):
-    def __init__(self, data_root, crop_size, valid_ratio, test_ratio, arg=False, datanames = ['BGU/','ARAD/']):
-        super().__init__(data_root, crop_size, valid_ratio, test_ratio, arg=arg, datanames = datanames)
+    def __init__(self, *, data_root, crop_size, valid_ratio, test_ratio, aug=True, datanames = ['ARAD/'], **ignore_kwargs):
+        super().__init__(data_root, crop_size, valid_ratio, test_ratio, aug=aug, datanames = datanames)
         self.testset = []
         for name in self.datanames:
             self.testset.append(split_full_test(data_root+ 'clean/' + name, valid_ratio= valid_ratio, test_ratio=test_ratio))
@@ -99,8 +110,8 @@ class TestFullDataset(GetDataset):
         self.length = len(self.hyper)
 
 class ValidDataset(GetDataset):
-    def __init__(self, data_root, crop_size, valid_ratio, test_ratio, arg=True, datanames = ['BGU/','ARAD/']):
-        super().__init__(data_root, crop_size, valid_ratio, test_ratio, arg=arg, datanames = datanames)
+    def __init__(self, *, data_root, crop_size, valid_ratio, test_ratio, aug=True, datanames = ['ARAD/'], **ignore_kwargs):
+        super().__init__(data_root, crop_size, valid_ratio, test_ratio, aug=aug, datanames = datanames)
         self.validset = []
         for name in self.datanames:
             self.validset.append(split_valid(data_root+ 'clean/' + name, valid_ratio= valid_ratio, test_ratio=test_ratio, imsize=self.crop_size))
@@ -110,9 +121,9 @@ class ValidDataset(GetDataset):
         self.length = len(self.hyper)
 
 class TestDatasetclean(GetDataset):
-    def __init__(self, data_root, arg=False, datanames = ['BGU/','ARAD/']):
+    def __init__(self, data_root, aug=False, datanames = ['ARAD/']):
         self.datanames = datanames
-        self.arg = arg
+        self.aug = aug
         self.rgb = []
         self.hyper = []
         self.testset = []
@@ -128,6 +139,5 @@ class TestDatasetclean(GetDataset):
             self.hyper.extend(mat['cube'])
 
 if __name__ == '__main__':
-    root = '/work3/s212645/Spectral_Reconstruction/RealHyperSpectrum/'
-    testset = TestDatasetclean(root)
+    testset = TrainDataset(**trainconfig)
     print(testset.__len__())

@@ -1,0 +1,51 @@
+model:
+  base_learning_rate: 4.5e-6
+  target: models.gan.sncwgan.SpectralNormalizationCGAN
+  params:
+    epochs: 100
+    learning_rate: 4e-04
+    cond_key: ycrcb
+    modelconfig:
+      target: models.transformer.DTN.DTN
+      params:
+        in_dim: 6
+        out_dim: 31
+        img_size: [128, 128]
+        window_size: 8
+        n_block: [2,2,2,2]
+        bottleblock: 4 
+
+    lossconfig:
+      target: models.losses.gan_loss.Wgan_Loss
+      params:
+        l1_weight: 100
+        sam_weight: 100
+        features_weight: 10
+        discconfig:
+          target: models.gan.networks.SN_Discriminator_perceptualLoss
+          params:
+            input_nums: 37
+
+data:
+  target: dataset.base.DataModuleFromConfig
+  params:
+    batch_size: 8
+    num_workers: 2
+    train:
+      target: dataset.datasets.TrainDataset
+      params:
+        data_root: /work3/s212645/Spectral_Reconstruction/
+        crop_size: 128
+        valid_ratio: 0.1
+        test_ratio: 0.1
+        aug: True
+        datanames: ['ARAD/']
+    validation:
+      target: dataset.datasets.ValidDataset
+      params:
+        data_root: /work3/s212645/Spectral_Reconstruction/
+        crop_size: 128
+        valid_ratio: 0.1
+        test_ratio: 0.1
+        aug: True
+        datanames: ['ARAD/']

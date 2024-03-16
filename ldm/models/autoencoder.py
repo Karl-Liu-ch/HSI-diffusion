@@ -1,3 +1,5 @@
+import sys
+sys.path.append('./')
 import torch
 import pytorch_lightning as pl
 import torch.nn.functional as F
@@ -9,7 +11,7 @@ from ldm.modules.diffusionmodules.model import Encoder, Decoder
 from ldm.modules.distributions.distributions import DiagonalGaussianDistribution
 
 from ldm.util import instantiate_from_config
-
+import numpy as np
 
 class VQModel(pl.LightningModule):
     def __init__(self,

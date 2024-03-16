@@ -1,0 +1,3 @@
+# ninja log v5
+1	30357	1710263613226681000	/zhome/02/b/164706/Master_Courses/2023_Fall/Spectral_Reconstruction/Models/kernels/window_process/build/temp.linux-x86_64-cpython-311/swin_window_process.o	b1f5c50f78896933
+0	63727	1710263646600795000	/zhome/02/b/164706/Master_Courses/2023_Fall/Spectral_Reconstruction/Models/kernels/window_process/build/temp.linux-x86_64-cpython-311/swin_window_process_kernel.o	bef120d3a94b60a9
