@@ -6,6 +6,28 @@ import torch.nn.functional as F
 from torch import Tensor
 from models.gan.networks import *
 from utils import instantiate_from_config
+from models.vae.networks import Encoder
+from omegaconf import OmegaConf
+
+def load_hsi_perceptual_encoder():
+    ckpt_path = '/work3/s212645/Spectral_Reconstruction/checkpoint/vae_perceptual/lightning_logs/version_0/checkpoints/epoch83-mrae_avg0.05.ckpt'
+    ckpt = torch.load(ckpt_path)
+    encoder_weights = {k: v for k, v in ckpt["state_dict"].items() if k.startswith("encoder.")}
+    keys = []
+    newkeys = []
+    for key in encoder_weights.keys():
+        keys.append(key)
+        newkey = key[8:]
+        newkeys.append(newkey)
+    for key, newkey in zip(keys, newkeys):
+        encoder_weights[newkey] = encoder_weights.pop(key)
+    cfg = OmegaConf.load('configs/hsi_vae_perceptual.yaml').model.params.ddconfig
+    model = Encoder(**cfg).cuda()
+    model.load_state_dict(encoder_weights)
+    model.eval()
+    for param in model.parameters():
+        param.requires_grad = False
+    return model
 
 class SamLoss(nn.Module):
     def __init__(self) -> None:
@@ -94,6 +116,15 @@ class Wasserstein_Loss_features(nn.Module):
         self.features_weight = features_weight
         self.disc_weight = disc_weight
         self.threshold = threshold
+        self.perceptual_model = load_hsi_perceptual_encoder()
+
+    def cal_perceptual_loss(self, reconstructions, labels):
+        loss = 0
+        real_features = self.perceptual_model.get_features(labels)
+        fake_features = self.perceptual_model.get_features(reconstructions)
+        for real_feature, fake_feature in zip(real_features, fake_features):
+            loss += F.mse_loss(real_feature, fake_feature)
+        return loss
 
     def calculate_adaptive_weight(self, rec_loss, g_loss, last_layer=None):
         if last_layer is not None:
@@ -129,7 +160,8 @@ class Wasserstein_Loss_features(nn.Module):
             feature_loss = 0
             for k in range(len(fake_features)):
                 feature_loss += F.mse_loss(real_features[k].detach(), fake_features[k])
-            total_loss = - disc_fake + rec_loss + feature_loss * self.features_weight * disc_factor
+            perceptual_loss = self.cal_perceptual_loss(reconstructions, labels)
+            total_loss = - disc_fake + rec_loss + feature_loss * self.features_weight * disc_factor + perceptual_loss
             return total_loss
         
         if optimizer_idx == 1:
@@ -151,6 +183,15 @@ class Wasserstein_Loss(nn.Module):
         self.l1_weight = l1_weight
         self.sam_loss = SamLoss()
         self.sam_weight = sam_weight
+        self.perceptual_model = load_hsi_perceptual_encoder()
+
+    def cal_perceptual_loss(self, reconstructions, labels):
+        loss = 0
+        real_features = self.perceptual_model.get_features(labels)
+        fake_features = self.perceptual_model.get_features(reconstructions)
+        for real_feature, fake_feature in zip(real_features, fake_features):
+            loss += F.mse_loss(real_feature, fake_feature)
+        return loss
 
     def calculate_adaptive_weight(self, rec_loss, g_loss, last_layer=None):
         if last_layer is not None:
@@ -177,7 +218,8 @@ class Wasserstein_Loss(nn.Module):
             disc_fake = discriminator(torch.concat([reconstructions, cond], dim=1))
             disc_fake = disc_fake.mean(0).view(1)
             disc_fake = disc_fake * self.calculate_adaptive_weight(rec_loss, disc_fake, last_layer)
-            total_loss = - disc_fake + rec_loss
+            perceptual_loss = self.cal_perceptual_loss(reconstructions, labels)
+            total_loss = - disc_fake + rec_loss + perceptual_loss
             return total_loss
         
         if optimizer_idx == 1:
@@ -239,8 +281,3 @@ class LS_Loss(nn.Module):
             disc_real = self.criterion(disc_real, real_labels)
             total_loss = disc_fake.mean(0).view(1) - disc_real.mean(0).view(1)
             return total_loss
-        
-if __name__ == '__main__':
-    ckpt_path = '/work3/s212645/Spectral_Reconstruction/checkpoint/vae_perceptual/lightning_logs/version_0/checkpoints/epoch80-mrae_avg0.05.ckpt'
-    ckpt = torch.load(ckpt_path)
-    encoder_weights = {k: v for k, v in ckpt["state_dict"].items() if k.startswith("encoder.")}
