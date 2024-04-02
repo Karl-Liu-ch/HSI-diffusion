@@ -59,6 +59,7 @@ class BaseModel():
         self.lambdasam = 100
         # self.lossl1 = nn.L1Loss()
         self.lossl1 = criterion_mrae
+        self.loss_min = None
     
     def init_Net(self):
         if self.multiGPU:
@@ -101,9 +102,9 @@ class BaseModel():
         losses_psnr = AverageMeter()
         losses_sam = AverageMeter()
         losses_sid = AverageMeter()
-        for i, (_, target, input) in enumerate(val_loader):
-            input = input.cuda()
-            target = target.cuda()
+        for i, batch in enumerate(val_loader):
+            target = batch['label'].cuda()
+            input = batch['ycrcb'].cuda()
             if self.nonoise:
                 z = input
             else:
@@ -148,7 +149,7 @@ class BaseModel():
             pass
         test_data = TestDataset(data_root=opt.data_root, crop_size=opt.patch_size, valid_ratio = 0.1, test_ratio=0.1, datanames = datanames)
         print("Test set samples: ", len(test_data))
-        test_loader = DataLoader(dataset=test_data, batch_size=opt.batch_size, shuffle=False, num_workers=2, pin_memory=True)
+        test_loader = DataLoader(dataset=test_data, batch_size=opt.batch_size, shuffle=False, num_workers=32, pin_memory=True)
         self.G.eval()
         losses_mrae = AverageMeter()
         losses_rmse = AverageMeter()
@@ -159,10 +160,10 @@ class BaseModel():
         losses_fid = AverageMeter()
         losses_ssim = AverageMeter()
         count = 0
-        for i, (input, target, rgb_gt) in enumerate(test_loader):
-            input = input.cuda()
-            target = target.cuda()
-            rgb_gt = rgb_gt.cuda()
+        for i, batch in enumerate(test_loader):
+            target = batch['label'].cuda()
+            input = batch['ycrcb'].cuda()
+            rgb_gt = batch['cond'].cuda()
             if not self.nonoise:
                 z = torch.randn_like(input).cuda()
                 z = torch.concat([z, input], dim=1)
@@ -225,12 +226,23 @@ class BaseModel():
         checkpoint = torch.load(os.path.join(self.root, name))
         self.metrics = checkpoint
     
-    def save_checkpoint(self, best = False):
+    def save_top_k(self, loss):
+        save = False
+        i = None
+        if (loss < self.loss_min).any():
+            save = True
+            i = np.argwhere((loss < self.loss_min) == True).min()
+            self.loss_min[i+1:] = self.loss_min[:-i-1]
+            self.loss_min[i] = loss
+        return save, i
+    
+    def save_checkpoint(self, best = False, top_k = None):
         if self.multiGPU:
             state = {
                 'epoch': self.epoch,
                 'iter': self.iteration,
                 'best_mrae': self.best_mrae,
+                'loss_min': self.loss_min, 
                 'G': self.G.module.state_dict(),
                 'D': self.D.module.state_dict(),
                 'optimG': self.optimG.state_dict(),
@@ -241,6 +253,7 @@ class BaseModel():
                 'epoch': self.epoch,
                 'iter': self.iteration,
                 'best_mrae': self.best_mrae,
+                'loss_min': self.loss_min, 
                 'G': self.G.state_dict(),
                 'D': self.D.state_dict(),
                 'optimG': self.optimG.state_dict(),
@@ -249,6 +262,10 @@ class BaseModel():
         if best: 
             name = 'net_epoch_best.pth'
             torch.save(state, os.path.join(self.root, name))
+        if top_k is not None:
+            name = f'net_epoch_{top_k}.pth'
+            torch.save(state, os.path.join(self.root, name))
+            print(f'top: {top_k} saved. ')
         name = 'net.pth'
         torch.save(state, os.path.join(self.root, name))
         

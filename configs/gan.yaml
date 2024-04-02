@@ -1,0 +1,19 @@
+target: models.gan.gan.Gan
+params:
+  valid_ratio: 0.1
+  test_ratio: 0.1
+  genconfig:
+    target: models.transformer.SN_DTN
+    params:
+      in_channels: 6
+      out_channels: 31
+      n_feat: 31
+      stage: 3
+      img_size: [128, 128]
+
+  disconfig:
+    target: models.gan.networks.SN_Discriminator_perceptualLoss
+    params:
+      input_nums: 37
+      n_layer: 4
+      n_block: 2

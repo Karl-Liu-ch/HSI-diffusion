@@ -1,237 +1,468 @@
+import sys
+sys.path.append('./')
 import torch
-import torch.nn as nn
+from torch import nn
+from torch.nn import functional as F
 from einops import rearrange, repeat
 from einops.layers.torch import Rearrange
-from torch.nn import functional as F
-from Models.GAN.networks import ResnetBlock
+import torch.optim as optim
+import torch.backends.cudnn as cudnn
+from dataset.datasets import TrainDataset, ValidDataset, TestDataset
+from utils import *
+import os
+from torch.utils.data import DataLoader
+from torch.autograd import Variable
+from options import opt
+import numpy as np
+from models.vae.Base import BaseModel
+from models.transformer.MST_Plus_Plus import *
+
+os.environ["CUDA_DEVICE_ORDER"] = 'PCI_BUS_ID'
+if opt.multigpu:
+    os.environ["CUDA_VISIBLE_DEVICES"] = opt.gpu_id
+    local_rank = int(os.environ["LOCAL_RANK"])
+    torch.cuda.set_device(local_rank)
+else:
+    os.environ["CUDA_VISIBLE_DEVICES"] = opt.gpu_id
+device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+
+def nonlinearity(x):
+    # swish
+    return x*torch.sigmoid(x)
+
+def GroupNormalize(in_channels, num_groups=31):
+    return torch.nn.GroupNorm(num_groups=num_groups, num_channels=in_channels, eps=1e-6, affine=True)
+
+class ResnetBlock(nn.Module):
+    def __init__(self, *, in_channels, out_channels=None, conv_shortcut=False,
+                 dropout, temb_channels=512):
+        super().__init__()
+        self.in_channels = in_channels
+        out_channels = in_channels if out_channels is None else out_channels
+        self.out_channels = out_channels
+        self.use_conv_shortcut = conv_shortcut
+
+        self.norm1 = GroupNormalize(in_channels)
+        self.conv1 = torch.nn.Conv2d(in_channels,
+                                     out_channels,
+                                     kernel_size=3,
+                                     stride=1,
+                                     padding=1)
+        if temb_channels > 0:
+            self.temb_proj = torch.nn.Linear(temb_channels,
+                                             out_channels)
+        self.norm2 = GroupNormalize(out_channels)
+        self.dropout = torch.nn.Dropout(dropout)
+        self.conv2 = torch.nn.Conv2d(out_channels,
+                                     out_channels,
+                                     kernel_size=3,
+                                     stride=1,
+                                     padding=1)
+        if self.in_channels != self.out_channels:
+            if self.use_conv_shortcut:
+                self.conv_shortcut = torch.nn.Conv2d(in_channels,
+                                                     out_channels,
+                                                     kernel_size=3,
+                                                     stride=1,
+                                                     padding=1)
+            else:
+                self.nin_shortcut = torch.nn.Conv2d(in_channels,
+                                                    out_channels,
+                                                    kernel_size=1,
+                                                    stride=1,
+                                                    padding=0)
+
+    def forward(self, x, temb):
+        h = x
+        h = self.norm1(h)
+        h = nonlinearity(h)
+        h = self.conv1(h)
+
+        if temb is not None:
+            h = h + self.temb_proj(nonlinearity(temb))[:,:,None,None]
+
+        h = self.norm2(h)
+        h = nonlinearity(h)
+        h = self.dropout(h)
+        h = self.conv2(h)
+
+        if self.in_channels != self.out_channels:
+            if self.use_conv_shortcut:
+                x = self.conv_shortcut(x)
+            else:
+                x = self.nin_shortcut(x)
+
+        return x+h
 
 class Encoder(nn.Module):
-    def __init__(self,
-                 in_channels: int,
-                 condition_channels: int, 
-                 n_blocks = 0) -> None:
-        super(Encoder, self).__init__()
-
+    def __init__(self, *, ch=31, out_ch, ch_mult=(1,2,4,8), num_attn_blocks,
+                 attn_resolutions, dropout=0.0, resamp_with_conv=True, in_channels,
+                 resolution, z_channels, double_z=True, use_linear_attn=False, attn_type="vanilla",
+                 **ignore_kwargs):
+        super().__init__()
+        if use_linear_attn: attn_type = "linear"
+        self.ch = ch
+        self.temb_ch = 0
+        self.num_resolutions = len(ch_mult)
+        self.resolution = resolution
         self.in_channels = in_channels
+        self.num_attn_blocks = num_attn_blocks
 
-        def ConvT(input_nums, output_nums):
-            layer = []
-            layer.append(nn.ConvTranspose2d(input_nums, output_nums, kernel_size=(4,4), stride=(2,2), padding=(1,1), bias=False))
-            layer.append(nn.BatchNorm2d(output_nums))
-            layer.append(nn.ReLU())
-            return layer
-        
-        def Conv(input_nums, output_nums, stride):
-            layer = []
-            layer.append(nn.Conv2d(input_nums, output_nums, kernel_size=(3,3), stride=stride, padding=(1,1), bias=False))
-            layer.append(nn.BatchNorm2d(output_nums))
-            layer.append(nn.ReLU())
-            return layer
-        
-        hidden_dims = [64, 128]
-        self.embed_class0 = nn.Conv2d(condition_channels, condition_channels, kernel_size=1, bias=False)
-        self.embed_class1 = nn.Sequential(*Conv(condition_channels, hidden_dims[0], stride=2))
-        self.embed_class2 = nn.Sequential(*Conv(hidden_dims[0], hidden_dims[1], stride=2))
-        
-        self.embed_data = nn.Conv2d(in_channels, in_channels, kernel_size=1, bias=False)
-            
-        self.hidden_dims = hidden_dims
-        # Build Encoder
-        self.encconv1 = nn.Sequential(*Conv(in_channels, hidden_dims[0], stride=2))
-        self.encconv2 = nn.Sequential(*Conv(hidden_dims[0], hidden_dims[1], stride=2))
-        
-        # fc_mu0 = Conv(in_channels, in_channels, stride=1)
-        # for i in range(n_blocks):
-        #     fc_mu0 += [ResnetBlock(in_channels, padding_type='reflect', norm_layer=nn.BatchNorm2d, use_dropout=False, use_bias=False)]
-        # fc_mu0 += [nn.Conv2d(in_channels, in_channels, kernel_size=(3,3), stride=(1,1), padding=(1,1), bias=False)]
-        # self.fc_mu0 = nn.Sequential(*fc_mu0)
-        # fc_var0 = Conv(in_channels, in_channels, stride=1)
-        # for i in range(n_blocks):
-        #     fc_var0 += [ResnetBlock(in_channels, padding_type='reflect', norm_layer=nn.BatchNorm2d, use_dropout=False, use_bias=False)]
-        # fc_var0 += [nn.Conv2d(in_channels, in_channels, kernel_size=(3,3), stride=(1,1), padding=(1,1), bias=False)]
-        # self.fc_var0 = nn.Sequential(*fc_var0)
-        
-        # fc_mu1 = Conv(hidden_dims[0], hidden_dims[0], stride=1)
-        # for i in range(n_blocks):
-        #     fc_mu1 += [ResnetBlock(hidden_dims[0], padding_type='reflect', norm_layer=nn.BatchNorm2d, use_dropout=False, use_bias=False)]
-        # fc_mu1 += [nn.Conv2d(hidden_dims[0], hidden_dims[0], kernel_size=(3,3), stride=(1,1), padding=(1,1), bias=False)]
-        # self.fc_mu1 = nn.Sequential(*fc_mu1)
-        # fc_var1 = Conv(hidden_dims[0], hidden_dims[0], stride=1)
-        # for i in range(n_blocks):
-        #     fc_var1 += [ResnetBlock(hidden_dims[0], padding_type='reflect', norm_layer=nn.BatchNorm2d, use_dropout=False, use_bias=False)]
-        # fc_var1 += [nn.Conv2d(hidden_dims[0], hidden_dims[0], kernel_size=(3,3), stride=(1,1), padding=(1,1), bias=False)]
-        # self.fc_var1 = nn.Sequential(*fc_var1)
-        
-        # fc_mu2 = Conv(hidden_dims[1], hidden_dims[1], stride=1)
-        # for i in range(n_blocks):
-        #     fc_mu2 += [ResnetBlock(hidden_dims[1], padding_type='reflect', norm_layer=nn.BatchNorm2d, use_dropout=False, use_bias=False)]
-        # fc_mu2 += [nn.Conv2d(hidden_dims[1], hidden_dims[1], kernel_size=(3,3), stride=(1,1), padding=(1,1), bias=False)]
-        # self.fc_mu2 = nn.Sequential(*fc_mu2)
-        # fc_var2 = Conv(hidden_dims[1], hidden_dims[1], stride=1)
-        # for i in range(n_blocks):
-        #     fc_var2 += [ResnetBlock(hidden_dims[1], padding_type='reflect', norm_layer=nn.BatchNorm2d, use_dropout=False, use_bias=False)]
-        # fc_var2 += [nn.Conv2d(hidden_dims[1], hidden_dims[1], kernel_size=(3,3), stride=(1,1), padding=(1,1), bias=False)]
-        # self.fc_var2 = nn.Sequential(*fc_var2)
-        
-        self.fc_mu0 = nn.Sequential(*Conv(in_channels, in_channels, stride=1), 
-                                    nn.Conv2d(in_channels, in_channels, kernel_size=(3,3), stride=(1,1), padding=(1,1), bias=False)
-                                    )
-        self.fc_var0 = nn.Sequential(*Conv(in_channels, in_channels, stride=1), 
-                                    nn.Conv2d(in_channels, in_channels, kernel_size=(3,3), stride=(1,1), padding=(1,1), bias=False)
-                                    )
-        self.fc_mu1 = nn.Sequential(*Conv(hidden_dims[0], hidden_dims[0], stride=1), 
-                                    nn.Conv2d(hidden_dims[0], hidden_dims[0], kernel_size=(3,3), stride=(1,1), padding=(1,1), bias=False)
-                                    )
-        self.fc_var1 = nn.Sequential(*Conv(hidden_dims[0], hidden_dims[0], stride=1), 
-                                    nn.Conv2d(hidden_dims[0], hidden_dims[0], kernel_size=(3,3), stride=(1,1), padding=(1,1), bias=False)
-                                    )
-        self.fc_mu2 = nn.Sequential(*Conv(hidden_dims[1], hidden_dims[1], stride=1), 
-                                    nn.Conv2d(hidden_dims[1], hidden_dims[1], kernel_size=(3,3), stride=(1,1), padding=(1,1), bias=False)
-                                    )
-        self.fc_var2 = nn.Sequential(*Conv(hidden_dims[1], hidden_dims[1], stride=1), 
-                                    nn.Conv2d(hidden_dims[1], hidden_dims[1], kernel_size=(3,3), stride=(1,1), padding=(1,1), bias=False)
-                                    )
-        
-    def forward(self, input):
-        """
-        Encodes the input by passing through the encoder network
-        and returns the latent codes.
-        :param input: (Tensor) Input tensor to encoder [N x C x H x W]
-        :return: (Tensor) List of latent codes
-        """
-        embed_input = self.embed_data(input)
-        
-        embed_input1 = self.encconv1(embed_input)
-        embed_input2 = self.encconv2(embed_input1)
+        # downsampling
+        self.conv_in = torch.nn.Conv2d(in_channels,
+                                       self.ch,
+                                       kernel_size=3,
+                                       stride=1,
+                                       padding=1)
 
-        # Split the result into mu and var components
-        # of the latent Gaussian distribution
-        mu0 = self.fc_mu0(embed_input)
-        log_var0 = self.fc_var0(embed_input) # [31, H, W]
-        mu1 = self.fc_mu1(embed_input1)
-        log_var1 = self.fc_var1(embed_input1) # [64, H / 2, W / 2]
-        mu2 = self.fc_mu2(embed_input2)
-        log_var2 = self.fc_var2(embed_input2) # [128, H / 4, W / 4]
+        curr_res = resolution
+        in_ch_mult = (1,)+tuple(ch_mult)
+        self.in_ch_mult = in_ch_mult
+        self.down = nn.ModuleList()
+        for i_level in range(self.num_resolutions):
+            block = nn.ModuleList()
+            attn = nn.ModuleList()
+            block_in = ch*in_ch_mult[i_level]
+            block_out = ch*ch_mult[i_level]
+            block = ResnetBlock(in_channels=block_in,
+                                         out_channels=block_out,
+                                         temb_channels=self.temb_ch,
+                                         dropout=dropout)
+            block_in = block_out
+            attn = MSAB(dim=block_in, num_blocks=num_attn_blocks, dim_head=ch, heads=block_in // ch)
+            down = nn.Module()
+            down.block = block
+            down.attn = attn
+            if i_level != self.num_resolutions-1:
+                down.downsample = nn.Conv2d(block_in, block_in, kernel_size=3, stride=2, padding=1)
+                curr_res = curr_res // 2
+            self.down.append(down)
 
-        return [mu0, log_var0, mu1, log_var1, mu2, log_var2]
-    
-    def reparameterize(self, mu0, logvar0, mu1, logvar1, mu2, logvar2):
-        """
-        Will a single z be enough ti compute the expectation
-        for the loss??
-        :param mu: (Tensor) Mean of the latent Gaussian
-        :param logvar: (Tensor) Standard deviation of the latent Gaussian
-        :return:
-        """
-        std0 = torch.exp(0.5 * logvar0)
-        eps0 = torch.randn_like(std0)
-        std1 = torch.exp(0.5 * logvar1)
-        eps1 = torch.randn_like(std1)
-        std2 = torch.exp(0.5 * logvar2)
-        eps2 = torch.randn_like(std2)
-        return [eps0 * std0 + mu0, eps1 * std1 + mu1, eps2 * std2 + mu2]
+        # middle
+        self.mid = nn.Module()
+        self.mid.attn_1 = MSAB(dim=block_in, num_blocks=num_attn_blocks, dim_head=ch, heads=block_in // ch)
 
+        # end
+        self.norm_out = GroupNormalize(block_in)
+        self.conv_out = torch.nn.Conv2d(block_in,
+                                        2*z_channels if double_z else z_channels,
+                                        kernel_size=3,
+                                        stride=1,
+                                        padding=1)
+
+    def forward(self, x):
+        # timestep embedding
+        temb = None
+
+        # downsampling
+        hs = [self.conv_in(x)]
+        for i_level in range(self.num_resolutions):
+            h = self.down[i_level].block(hs[-1], temb)
+            hs.append(h)
+            h = self.down[i_level].attn(hs[-1])
+            hs.append(h)
+            if i_level != self.num_resolutions-1:
+                hs.append(self.down[i_level].downsample(hs[-1]))
+
+        # middle
+        h = hs[-1]
+        h = self.mid.attn_1(h)
+
+        # end
+        h = self.norm_out(h)
+        h = nonlinearity(h)
+        h = self.conv_out(h)
+        return h
+
+    def get_features(self, x):
+        # timestep embedding
+        temb = None
+
+        # downsampling
+        hs = [self.conv_in(x)]
+        for i_level in range(self.num_resolutions):
+            h = self.down[i_level].block(hs[-1], temb)
+            hs.append(h)
+            h = self.down[i_level].attn(hs[-1])
+            hs.append(h)
+            if i_level != self.num_resolutions-1:
+                hs.append(self.down[i_level].downsample(hs[-1]))
+
+        # middle
+        h = hs[-1]
+        h = self.mid.attn_1(h)
+        hs.append(h)
+
+        # end
+        h = self.norm_out(h)
+        hs.append(h)
+        # h = nonlinearity(h)
+        # h = self.conv_out(h)
+        return hs
+
+class CondEncoder(Encoder):
+    def forward(self, x):
+        # timestep embedding
+        temb = None
+
+        # downsampling
+        hs = [self.conv_in(x)]
+        cond_features = [self.conv_in(x)]
+        for i_level in range(self.num_resolutions):
+            h = self.down[i_level].block(hs[-1], temb)
+            hs.append(h)
+            h = self.down[i_level].attn(hs[-1])
+            hs.append(h)
+            cond_features.append(h)
+            if i_level != self.num_resolutions-1:
+                hs.append(self.down[i_level].downsample(hs[-1]))
+
+        # middle
+        h = hs[-1]
+        h = self.mid.attn_1(h)
+        cond_features.append(h)
+
+        # end
+        h = self.norm_out(h)
+        h = nonlinearity(h)
+        h = self.conv_out(h)
+        return h, cond_features
+        
 class Decoder(nn.Module):
-    def __init__(self,
-                in_channels: int,
-                condition_channels: int, 
-                n_blocks = 0) -> None:
-        super(Decoder, self).__init__()
-
+    def __init__(self, *, ch=31, out_ch, ch_mult=(1,2,4,8), num_attn_blocks,
+                 attn_resolutions, dropout=0.0, resamp_with_conv=True, in_channels,
+                 resolution, z_channels, give_pre_end=False, tanh_out=False, use_linear_attn=False,
+                 attn_type="vanilla", **ignorekwargs):
+        super().__init__()
+        if use_linear_attn: attn_type = "linear"
+        self.ch = ch
+        self.temb_ch = 0
+        self.num_resolutions = len(ch_mult)
+        self.num_attn_blocks = num_attn_blocks
+        self.resolution = resolution
         self.in_channels = in_channels
-        self.condition_channels = condition_channels
+        self.give_pre_end = give_pre_end
+        self.tanh_out = tanh_out
 
-        def ConvT(input_nums, output_nums):
-            layer = []
-            layer.append(nn.ConvTranspose2d(input_nums, output_nums, kernel_size=(4,4), stride=(2,2), padding=(1,1), bias=False))
-            layer.append(nn.BatchNorm2d(output_nums))
-            layer.append(nn.ReLU())
-            return layer
+        # compute in_ch_mult, block_in and curr_res at lowest res
+        in_ch_mult = (1,)+tuple(ch_mult)
+        block_in = ch*ch_mult[self.num_resolutions-1]
+        curr_res = resolution // 2**(self.num_resolutions-1)
+        self.z_shape = (1,z_channels,curr_res,curr_res)
+        print("Working with z of shape {} = {} dimensions.".format(
+            self.z_shape, np.prod(self.z_shape)))
+
+        # z to block_in
+        self.conv_in = torch.nn.Conv2d(z_channels,
+                                       block_in,
+                                       kernel_size=3,
+                                       stride=1,
+                                       padding=1)
+
+        # middle
+        self.mid = nn.Module()
+        self.mid.attn_1 = MSAB(dim=block_in, num_blocks=num_attn_blocks, dim_head=ch, heads=block_in // ch)
+
+        # upsampling
+        self.up = nn.ModuleList()
+        for i_level in reversed(range(self.num_resolutions)):
+            block = nn.ModuleList()
+            attn = nn.ModuleList()
+            block_out = ch*ch_mult[i_level]
+            block = ResnetBlock(in_channels=block_in,
+                                         out_channels=block_out,
+                                         temb_channels=self.temb_ch,
+                                         dropout=dropout)
+            block_in = block_out
+            attn = MSAB(dim=block_in, num_blocks=num_attn_blocks, dim_head=ch, heads=block_in // ch)
+            up = nn.Module()
+            up.block = block
+            up.attn = attn
+            if i_level != 0:
+                up.upsample = nn.ConvTranspose2d(block_in, block_in, kernel_size=4, stride=2, padding=1)
+                curr_res = curr_res * 2
+            self.up.insert(0, up) # prepend to get consistent order
+
+        # end
+        self.norm_out = GroupNormalize(block_in)
+        self.conv_out = torch.nn.Conv2d(block_in,
+                                        out_ch,
+                                        kernel_size=3,
+                                        stride=1,
+                                        padding=1)
+
+    def forward(self, z):
+        #assert z.shape[1:] == self.z_shape[1:]
+        self.last_z_shape = z.shape
+
+        # timestep embedding
+        temb = None
+
+        # z to block_in
+        h = self.conv_in(z)
+
+        # middle
+        h = self.mid.attn_1(h)
+
+        # upsampling
+        for i_level in reversed(range(self.num_resolutions)):
+            h = self.up[i_level].block(h, temb)
+            h = self.up[i_level].attn(h)
+            if i_level != 0:
+                h = self.up[i_level].upsample(h)
+
+        # end
+        if self.give_pre_end:
+            return h
+
+        h = self.norm_out(h)
+        h = nonlinearity(h)
+        h = self.conv_out(h)
+        if self.tanh_out:
+            h = torch.tanh(h)
+        return h
+
+class FirstStageDecoder(nn.Module):
+    def __init__(self, *, ch=31, out_ch, ch_mult=(1,2,4,8), num_attn_blocks,
+                 attn_resolutions, dropout=0.0, resamp_with_conv=True, in_channels,
+                 resolution, z_channels, give_pre_end=False, **ignorekwargs):
+        super().__init__()
+        self.ch = ch
+        self.temb_ch = 0
+        self.num_resolutions = len(ch_mult)
+        self.num_attn_blocks = num_attn_blocks
+        self.resolution = resolution
+        self.in_channels = in_channels
+        self.give_pre_end = give_pre_end
+
+        # compute in_ch_mult, block_in and curr_res at lowest res
+        in_ch_mult = (1,)+tuple(ch_mult)
+        block_in = ch*ch_mult[self.num_resolutions-1]
+        curr_res = resolution // 2**(self.num_resolutions-1)
+        self.z_shape = (1,z_channels,curr_res,curr_res)
+        print("Working with z of shape {} = {} dimensions.".format(
+            self.z_shape, np.prod(self.z_shape)))
+
+        # z to block_in
+        self.conv_in = torch.nn.Conv2d(z_channels * 2,
+                                       block_in,
+                                       kernel_size=3,
+                                       stride=1,
+                                       padding=1)
+
+        # middle
+        self.mid = nn.Module()
+        self.mid.conv_1 = nn.Conv2d(in_channels=block_in*2, out_channels=block_in*2, kernel_size=1, stride=1)
+        self.mid.attn_1 = MSAB(dim=block_in*2, num_blocks=num_attn_blocks, dim_head=ch, heads=block_in*2 // ch) 
+        self.mid.block_1 = ResnetBlock(in_channels=block_in*2,
+                                       out_channels=block_in,
+                                       temb_channels=self.temb_ch,
+                                       dropout=dropout)
+        # upsampling
+        self.up = nn.ModuleList()
+        for i_level in reversed(range(self.num_resolutions)):
+            conv = nn.ModuleList()
+            block = nn.ModuleList()
+            attn = nn.ModuleList()
+            block_out = ch*ch_mult[i_level]
+            conv = nn.Conv2d(in_channels=block_in+block_out, out_channels=block_in+block_out, kernel_size=1, stride=1)
+            block = ResnetBlock(in_channels=block_in+block_out,
+                                    out_channels=block_out,
+                                    temb_channels=self.temb_ch,
+                                    dropout=dropout)
+            block_in = block_out
+            attn = MSAB(dim=block_in, num_blocks=num_attn_blocks, dim_head=ch, heads=block_in // ch)
+            up = nn.Module()
+            up.conv = conv
+            up.block = block
+            up.attn = attn
+            if i_level != 0:
+                up.upsample = nn.ConvTranspose2d(block_in, block_in, kernel_size=4, stride=2, padding=1)
+                curr_res = curr_res * 2
+            self.up.insert(0, up) # prepend to get consistent order
+
+        # end
+        self.conv_final = nn.Conv2d(in_channels=block_in*2, out_channels=block_in, kernel_size=1, stride=1)
+        self.norm_out = GroupNormalize(block_in)
+        self.conv_out = torch.nn.Conv2d(block_in,
+                                        out_ch,
+                                        kernel_size=3,
+                                        stride=1,
+                                        padding=1)
+
+    def forward(self, z, cond_features):
+        #assert z.shape[1:] == self.z_shape[1:]
+        self.last_z_shape = z.shape
+
+        # timestep embedding
+        temb = None
+
+        # z to block_in
+        # z = torch.concat([z, cond], dim=1)
+        h = self.conv_in(z)
+
+        # middle
+        h = self.mid.conv_1(torch.concat([h, cond_features[-1]], dim=1))
+        h = self.mid.attn_1(h)
+        h = self.mid.block_1(h, temb)
+
+        # upsampling
+        for i_level in reversed(range(self.num_resolutions)):
+            cond_feature = cond_features[i_level+1]
+            # print(cond_feature.shape, h.shape)
+            h = self.up[i_level].conv(torch.concat([h, cond_feature], dim=1))
+            h = self.up[i_level].block(h, temb)
+            h = self.up[i_level].attn(h)
+            if i_level != 0:
+                h = self.up[i_level].upsample(h)
+
+        # end
+        if self.give_pre_end:
+            return h
         
-        def Conv(input_nums, output_nums, stride):
-            layer = []
-            layer.append(nn.Conv2d(input_nums, output_nums, kernel_size=(3,3), stride=stride, padding=(1,1), bias=False))
-            layer.append(nn.BatchNorm2d(output_nums))
-            layer.append(nn.ReLU())
-            return layer
-        
-        hidden_dims = [64, 128]
-        # Build Decoder
+        h = self.conv_final(torch.concat([h, cond_features[0]], dim=1))
+        h = self.norm_out(h)
+        h = nonlinearity(h)
+        h = self.conv_out(h)
+        return h
 
-        # Layer0 = Conv(hidden_dims[1] * 2, hidden_dims[1] * 2, stride=1)
-        # for i in range(n_blocks):
-        #     Layer0 += [ResnetBlock(hidden_dims[1] * 2, padding_type='reflect', norm_layer=nn.BatchNorm2d, use_dropout=False, use_bias=False)]
-        # self.decoder_input0 = nn.Sequential(*Layer0)
-        # Layer1 = Conv(hidden_dims[0] * 2, hidden_dims[0] * 2, stride=1)
-        # for i in range(n_blocks):
-        #     Layer1 += [ResnetBlock(hidden_dims[0] * 2, padding_type='reflect', norm_layer=nn.BatchNorm2d, use_dropout=False, use_bias=False)]
-        # self.decoder_input1 = nn.Sequential(*Layer1)
-        # Layer2 = Conv(in_channels + condition_channels, in_channels + condition_channels, stride=1)
-        # for i in range(n_blocks):
-        #     Layer2 += [ResnetBlock(in_channels + condition_channels, padding_type='reflect', norm_layer=nn.BatchNorm2d, use_dropout=False, use_bias=False)]
-        # self.decoder_input2 = nn.Sequential(*Layer2)
-        
-        self.decoder_input0 = nn.Sequential(*Conv(hidden_dims[1] * 2, hidden_dims[1] * 2, stride=1))
-        self.decoder_input1 = nn.Sequential(*Conv(hidden_dims[0] * 2, hidden_dims[0] * 2, stride=1))
-        self.decoder_input2 = nn.Sequential(*Conv(in_channels + condition_channels, in_channels + condition_channels, stride=1))
 
-        self.decconv1 = nn.Sequential(*ConvT(hidden_dims[1] * 2, hidden_dims[1]))
-        self.decconv2 = nn.Sequential(*ConvT(hidden_dims[1] * 2, in_channels + condition_channels))
+class DiagonalGaussianDistribution(object):
+    def __init__(self, parameters, deterministic=False):
+        self.parameters = parameters
+        self.mean, self.logvar = torch.chunk(parameters, 2, dim=1)
+        self.logvar = torch.clamp(self.logvar, -30.0, 20.0)
+        self.deterministic = deterministic
+        self.std = torch.exp(0.5 * self.logvar)
+        self.var = torch.exp(self.logvar)
+        if self.deterministic:
+            self.var = self.std = torch.zeros_like(self.mean).to(device=self.parameters.device)
 
-        self.final_layer = nn.Sequential(
-                            nn.Conv2d((in_channels + condition_channels) * 2, out_channels= self.in_channels,
-                                      kernel_size= 3, padding= 1, bias=False)
-                            )
-        self.embed_class0 = nn.Conv2d(condition_channels, condition_channels, kernel_size=1)
-        self.embed_class1 = nn.Sequential(*Conv(condition_channels, hidden_dims[0], stride=2))
-        self.embed_class2 = nn.Sequential(*Conv(hidden_dims[0], hidden_dims[1], stride=2))
-    
-    def decode(self, z0, z1, z2):
-        # z0: [256, H / 4, W / 4] torch.concat([z0, y2])
-        result0 = self.decoder_input0(z0) # result0: [256, H / 4, H / 4]
-        result0 = self.decconv1(result0) # result0: [128, H / 2, W / 2]
-        # z1: [128, H / 2, W / 2] torch.concat([z1, y1])
-        result1 = self.decoder_input1(z1) # result1 : [128, H / 2, W / 2]
-        result1 = torch.concat([result1, result0], dim = 1) # result1: [256, H / 2, W / 2]
-        result1 = self.decconv2(result1) # result1: [34, H, W]
-        # z2: [34, H, W]
-        result2 = self.decoder_input2(z2) # result2: [34, H, W]
-        result2 = torch.concat([result2, result1], dim = 1) # result2: [68, H, W]
-        result = self.final_layer(result2)
-        return result
-    
-    def forward(self, z0, z1, z2, y):
-        embed_y0 = self.embed_class0(y)
-        embed_y1 = self.embed_class1(embed_y0)
-        embed_y2 = self.embed_class2(embed_y1)
-        
-        z0 = torch.cat([z0, embed_y2], dim = 1)
-        z1 = torch.cat([z1, embed_y1], dim = 1)
-        z2 = torch.cat([z2, embed_y0], dim = 1)
-        
-        recon = self.decode(z0, z1, z2)
-        return recon
+    def sample(self):
+        x = self.mean + self.std * torch.randn(self.mean.shape).to(device=self.parameters.device)
+        return x
 
-def vae_loss(recons, input, mu0, log_var0, mu1, log_var1, mu2, log_var2):
+    def kl(self, other=None):
+        if self.deterministic:
+            return torch.Tensor([0.])
+        else:
+            if other is None:
+                return 0.5 * torch.sum(torch.pow(self.mean, 2)
+                                       + self.var - 1.0 - self.logvar,
+                                       dim=[1, 2, 3])
+            else:
+                return 0.5 * torch.sum(
+                    torch.pow(self.mean - other.mean, 2) / other.var
+                    + self.var / other.var - 1.0 - self.logvar + other.logvar,
+                    dim=[1, 2, 3])
 
-    # kld_weight = 3e-3  # Account for the minibatch samples from the dataset
-    # kld_weight = 1024 / 128 / 128 / 31  # Account for the minibatch samples from the dataset
-    kld_weight = 1 / 128 / 128  # Account for the minibatch samples from the dataset
-    recons_loss =F.l1_loss(recons, input)
-    
-    Mu0 = rearrange(mu0, 'b c h w -> b (c h w)')
-    Log_var0 = rearrange(log_var0, 'b c h w -> b (c h w)')
-    kld_weight0 = 1 / Mu0.shape[1]
-    Mu1 = rearrange(mu1, 'b c h w -> b (c h w)')
-    Log_var1 = rearrange(log_var1, 'b c h w -> b (c h w)')
-    kld_weight1 = 1 / Mu1.shape[1]
-    Mu2 = rearrange(mu2, 'b c h w -> b (c h w)')
-    Log_var2 = rearrange(log_var2, 'b c h w -> b (c h w)')
-    kld_weight2 = 1 / Mu2.shape[1]
+    def nll(self, sample, dims=[1,2,3]):
+        if self.deterministic:
+            return torch.Tensor([0.])
+        logtwopi = np.log(2.0 * np.pi)
+        return 0.5 * torch.sum(
+            logtwopi + self.logvar + torch.pow(sample - self.mean, 2) / self.var,
+            dim=dims)
 
-    kld_loss0 = torch.mean(-0.5 * torch.sum(1 + Log_var0 - Mu0 ** 2 - Log_var0.exp(), dim = 1), dim = 0)
-    kld_loss1 = torch.mean(-0.5 * torch.sum(1 + Log_var1 - Mu1 ** 2 - Log_var1.exp(), dim = 1), dim = 0)
-    kld_loss2 = torch.mean(-0.5 * torch.sum(1 + Log_var2 - Mu2 ** 2 - Log_var2.exp(), dim = 1), dim = 0)
-
-    loss = recons_loss + kld_weight * (kld_loss0 + kld_loss1 + kld_loss2)
-    return loss
+    def mode(self):
+        return self.mean

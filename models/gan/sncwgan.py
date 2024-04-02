@@ -27,6 +27,7 @@ from models.gan.Utils import Log_loss, Itself_loss
 from models.transformer.MST_Plus_Plus import MST_Plus_Plus
 from color_loss import deltaELoss
 import pytorch_lightning as pl
+import lightning as l
 from pytorch_lightning.trainer import Trainer
 from utils import instantiate_from_config
 from omegaconf import OmegaConf
@@ -50,15 +51,16 @@ criterion_sid = Loss_SID()
 criterion_fid = Loss_Fid().cuda()
 criterion_ssim = Loss_SSIM().cuda()
 
-class SpectralNormalizationCGAN(pl.LightningModule):
+class SpectralNormalizationCGAN(l.LightningModule):
     def __init__(self,
                  modelconfig,
                  lossconfig, 
                  epochs,
                  learning_rate,
                  cond_key, 
+                 *args, **kwargs
                  ):
-        super().__init__()
+        super().__init__(*args, **kwargs)
         self.cond_key = cond_key
         self.automatic_optimization = False
         self.end_epoch = epochs
@@ -89,6 +91,9 @@ class SpectralNormalizationCGAN(pl.LightningModule):
         self.load_state_dict(sd, strict=False)
         print(f"Restored from {path}")
     
+    def get_last_layer(self):
+        return self.G.mapping.weight
+
     def forward(self, input):
         reconstructions = self.generator(input)
         return reconstructions
@@ -103,7 +108,7 @@ class SpectralNormalizationCGAN(pl.LightningModule):
 
         # generator
         self.toggle_optimizer(opt_g)
-        g_loss, log_dict_g = self.loss(rec, labels, cond, 0, split="train")
+        g_loss, log_dict_g = self.loss(rec, labels, cond, 0, split="train", last_layer = self.get_last_layer())
         self.log("train/aeloss", g_loss, prog_bar=True, logger=True, on_step=True, on_epoch=True)
         self.log_dict(log_dict_g, prog_bar=False, logger=True, on_step=True, on_epoch=True)
         self.manual_backward(g_loss)
@@ -113,7 +118,7 @@ class SpectralNormalizationCGAN(pl.LightningModule):
 
         # discriminator
         self.toggle_optimizer(opt_disc)
-        discloss, log_dict_disc = self.loss(rec, labels, cond, 1, split="train")
+        discloss, log_dict_disc = self.loss(rec, labels, cond, 1, split="train", last_layer = self.get_last_layer())
         self.log("train/discloss", discloss, prog_bar=True, logger=True, on_step=True, on_epoch=True)
         self.log_dict(log_dict_disc, prog_bar=False, logger=True, on_step=True, on_epoch=True)
         self.manual_backward(discloss)
@@ -149,7 +154,7 @@ class SpectralNormalizationCGAN(pl.LightningModule):
     
     def on_validation_epoch_end(self):
         print(f'validation: MRAE: {self.losses_mrae.avg}, RMSE: {self.losses_rmse.avg}, PSNR: {self.losses_psnr.avg}, SAM: {self.losses_sam.avg}.')
-        self.log_dict({'mrae': self.losses_mrae.avg, 'rmse': self.losses_rmse.avg, 'psnr': self.losses_psnr.avg, 'sam': self.losses_sam.avg})
+        self.log_dict({'val/mrae_avg': self.losses_mrae.avg, 'val/rmse_avg': self.losses_rmse.avg, 'val/psnr_avg': self.losses_psnr.avg, 'val/sam_avg': self.losses_sam.avg})
     
     def configure_optimizers(self):
         lr = self.lr

@@ -1,0 +1,38 @@
+model:
+  base_learning_rate: 4.5e-6
+  target: models.transformer.Base.BaseModel
+  params:
+    epochs: 100
+    learning_rate: 4e-04
+    cond_key: cond
+    modelconfig:
+      target: models.transformer.SN_MST_Plus_Plus.SN_MST_Plus_Plus
+      params:
+        in_channels: 3
+        out_channels: 31
+        n_feat: 31
+        stage: 3
+        
+data:
+  target: dataset.base.DataModuleFromConfig
+  params:
+    batch_size: 16
+    num_workers: 2
+    train:
+      target: dataset.datasets.TrainDataset
+      params:
+        data_root: /work3/s212645/Spectral_Reconstruction/
+        crop_size: 128
+        valid_ratio: 0.1
+        test_ratio: 0.1
+        aug: True
+        datanames: ['ARAD/']
+    validation:
+      target: dataset.datasets.ValidDataset
+      params:
+        data_root: /work3/s212645/Spectral_Reconstruction/
+        crop_size: 128
+        valid_ratio: 0.1
+        test_ratio: 0.1
+        aug: True
+        datanames: ['ARAD/']

@@ -1,19 +1,29 @@
-import sys
-sys.path.append('./')
 import torch
-import pytorch_lightning as pl
+import lightning as l
 import torch.nn.functional as F
 from contextlib import contextmanager
 
 from taming.modules.vqvae.quantize import VectorQuantizer2 as VectorQuantizer
 
-from ldm.modules.diffusionmodules.model import Encoder, Decoder
+from ldm.modules.diffusionmodules.model import Encoder, Decoder, CondEncoder, FirstStageDecoder
 from ldm.modules.distributions.distributions import DiagonalGaussianDistribution
 
 from ldm.util import instantiate_from_config
-import numpy as np
+from utils import *
 
-class VQModel(pl.LightningModule):
+from torch.autograd import Variable
+device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+
+criterion_mrae = Loss_MRAE()
+criterion_rmse = Loss_RMSE()
+criterion_psnr = Loss_PSNR()
+criterion_psnrrgb = Loss_PSNR()
+criterion_sam = Loss_SAM()
+criterion_sid = Loss_SID()
+criterion_fid = Loss_Fid().cuda()
+criterion_ssim = Loss_SSIM().cuda()
+
+class VQModel(l.LightningModule):
     def __init__(self,
                  ddconfig,
                  lossconfig,
@@ -284,7 +294,7 @@ class VQModelInterface(VQModel):
         return dec
 
 
-class AutoencoderKL(pl.LightningModule):
+class AutoencoderKL(l.LightningModule):
     def __init__(self,
                  ddconfig,
                  lossconfig,
@@ -296,6 +306,7 @@ class AutoencoderKL(pl.LightningModule):
                  monitor=None,
                  ):
         super().__init__()
+        self.automatic_optimization = False
         self.image_key = image_key
         self.encoder = Encoder(**ddconfig)
         self.decoder = Decoder(**ddconfig)
@@ -310,7 +321,10 @@ class AutoencoderKL(pl.LightningModule):
         if monitor is not None:
             self.monitor = monitor
         if ckpt_path is not None:
-            self.init_from_ckpt(ckpt_path, ignore_keys=ignore_keys)
+            try:
+                self.init_from_ckpt(ckpt_path, ignore_keys=ignore_keys)
+            except:
+                pass
 
     def init_from_ckpt(self, path, ignore_keys=list()):
         sd = torch.load(path, map_location="cpu")["state_dict"]
@@ -406,11 +420,11 @@ class AutoencoderKL(pl.LightningModule):
         x = x.to(self.device)
         if not only_inputs:
             xrec, posterior = self(x)
-            if x.shape[1] > 3:
-                # colorize with random projection
-                assert xrec.shape[1] > 3
-                x = self.to_rgb(x)
-                xrec = self.to_rgb(xrec)
+            # if x.shape[1] > 3:
+            #     # colorize with random projection
+            #     assert xrec.shape[1] > 3
+            #     x = self.to_rgb(x)
+            #     xrec = self.to_rgb(xrec)
             log["samples"] = self.decode(torch.randn_like(posterior.sample()))
             log["reconstructions"] = xrec
         log["inputs"] = x
@@ -443,3 +457,173 @@ class IdentityFirstStage(torch.nn.Module):
 
     def forward(self, x, *args, **kwargs):
         return x
+
+
+class CondAutoencoderKL(AutoencoderKL):
+    def __init__(self, ddconfig, lossconfig, embed_dim, learning_rate, ckpt_path=None, ignore_keys=[], image_key="image", colorize_nlabels=None, monitor=None):
+        super().__init__(ddconfig, lossconfig, embed_dim, ckpt_path, ignore_keys, image_key, colorize_nlabels, monitor)
+        self.encoder = CondEncoder(**ddconfig)
+        self.learning_rate = learning_rate
+
+    def encode(self, x):
+        h, condfeatures = self.encoder(x)
+        moments = self.quant_conv(h)
+        posterior = DiagonalGaussianDistribution(moments)
+        return posterior, condfeatures
+
+    def forward(self, input, sample_posterior=True):
+        posterior, condfeatures = self.encode(input)
+        if sample_posterior:
+            z = posterior.sample()
+        else:
+            z = posterior.mode()
+        dec = self.decode(z)
+        return dec, posterior, condfeatures
+
+    def training_step(self, batch, batch_idx):
+        opt_g, opt_disc = self.optimizers()
+        inputs = batch[self.image_key]
+        inputs = Variable(inputs)
+
+        reconstructions, posterior, condfeatures = self(inputs)
+
+        self.toggle_optimizer(opt_g)
+        aeloss, log_dict_ae = self.loss(inputs, reconstructions, posterior, 0, self.global_step,
+                                        last_layer=self.get_last_layer(), split="train")
+        self.log("aeloss", aeloss, prog_bar=True, logger=True, on_step=True, on_epoch=True)
+        self.log_dict(log_dict_ae, prog_bar=False, logger=True, on_step=True, on_epoch=False)
+        self.manual_backward(aeloss)
+        opt_g.step()
+        opt_g.zero_grad()
+        self.untoggle_optimizer(opt_g)
+        
+            # train the discriminator
+        self.toggle_optimizer(opt_disc)
+        discloss, log_dict_disc = self.loss(inputs, reconstructions, posterior, 1, self.global_step,
+                                            last_layer=self.get_last_layer(), split="train")
+
+        self.log("discloss", discloss, prog_bar=True, logger=True, on_step=True, on_epoch=True)
+        self.log_dict(log_dict_disc, prog_bar=False, logger=True, on_step=True, on_epoch=False)
+        self.manual_backward(discloss)
+        opt_disc.step()
+        opt_disc.zero_grad()
+        self.untoggle_optimizer(opt_disc)
+
+    def validation_step(self, batch, batch_idx):
+        if batch_idx == 0:
+            self.losses_mrae = AverageMeter()
+            self.losses_rmse = AverageMeter()
+            self.losses_psnr = AverageMeter()
+            self.losses_sam = AverageMeter()
+        labels = batch[self.image_key]
+        labels = Variable(labels)
+        output, posterior, condfeatures = self(labels)
+        loss_mrae = criterion_mrae(output, labels).detach()
+        loss_rmse = criterion_rmse(output, labels).detach()
+        loss_psnr = criterion_psnr(output, labels).detach()
+        loss_sam = criterion_sam(output, labels).detach()
+        criterion_sam.reset()
+        criterion_psnr.reset()
+        self.log_dict({'mrae': loss_mrae, 'rmse': loss_rmse, 'psnr': loss_psnr, 'sam': loss_sam})
+        self.losses_mrae.update(loss_mrae.data)
+        self.losses_rmse.update(loss_rmse.data)
+        self.losses_psnr.update(loss_psnr.data)
+        self.losses_sam.update(loss_sam.data)
+        return self.log_dict
+    
+    def on_validation_epoch_end(self):
+        print(f'validation: MRAE: {self.losses_mrae.avg}, RMSE: {self.losses_rmse.avg}, PSNR: {self.losses_psnr.avg}, SAM: {self.losses_sam.avg}.')
+        self.log_dict({'val/mrae_avg': self.losses_mrae.avg, 'val/rmse_avg': self.losses_rmse.avg, 'val/psnr_avg': self.losses_psnr.avg, 'val/sam_avg': self.losses_sam.avg})
+    
+def disabled_train(self, mode=True):
+    """Overwrite model.train with this function to make sure train/eval mode
+    does not change anymore."""
+    return self
+
+class FirstStageAutoencoderKL(AutoencoderKL):
+    def __init__(self, ddconfig, condconfig, lossconfig, embed_dim, learning_rate, ckpt_path=None, ignore_keys=[], image_key="image", cond_key='cond', colorize_nlabels=None, monitor=None):
+        super().__init__(ddconfig, lossconfig, embed_dim, ckpt_path, ignore_keys, image_key, colorize_nlabels, monitor)
+        self.decoder = FirstStageDecoder(**ddconfig)
+        self.learning_rate = learning_rate
+        self.cond_key = cond_key
+        model = instantiate_from_config(condconfig)
+        model = model.eval()
+        model.train = disabled_train
+        self.cond_encoder = model.encoder
+        self.cond_encoder.eval()
+        del model
+        if ckpt_path is not None:
+            self.init_from_ckpt(ckpt_path, ignore_keys=ignore_keys)
+
+    def decode(self, z, condfeatures):
+        z = self.post_quant_conv(z)
+        dec = self.decoder(z, condfeatures)
+        return dec
+
+    def forward(self, input, cond, sample_posterior=True):
+        posterior = self.encode(input)
+        if sample_posterior:
+            z = posterior.sample()
+        else:
+            z = posterior.mode()
+        _, condfeatures = self.cond_encoder(cond)
+        dec = self.decode(z, condfeatures)
+        return dec, posterior
+
+    def training_step(self, batch, batch_idx):
+        opt_g, opt_disc = self.optimizers()
+        inputs = self.get_input(batch, self.image_key)
+        cond = self.get_input(batch, self.cond_key)
+        reconstructions, posterior = self(inputs, cond)
+
+        self.toggle_optimizer(opt_g)
+        aeloss, log_dict_ae = self.loss(inputs, reconstructions, posterior, 0, self.global_step,
+                                        last_layer=self.get_last_layer(), cond=cond, split="train")
+        self.log("aeloss", aeloss, prog_bar=True, logger=True, on_step=True, on_epoch=True)
+        self.log_dict(log_dict_ae, prog_bar=False, logger=True, on_step=True, on_epoch=False)
+        self.manual_backward(aeloss)
+        opt_g.step()
+        opt_g.zero_grad()
+        self.untoggle_optimizer(opt_g)
+        
+            # train the discriminator
+        self.toggle_optimizer(opt_disc)
+        discloss, log_dict_disc = self.loss(inputs, reconstructions, posterior, 1, self.global_step,
+                                            last_layer=self.get_last_layer(), cond=cond, split="train")
+
+        self.log("discloss", discloss, prog_bar=True, logger=True, on_step=True, on_epoch=True)
+        self.log_dict(log_dict_disc, prog_bar=False, logger=True, on_step=True, on_epoch=False)
+        self.manual_backward(discloss)
+        opt_disc.step()
+        opt_disc.zero_grad()
+        self.untoggle_optimizer(opt_disc)
+        
+    def validation_step(self, batch, batch_idx):
+        if batch_idx == 0:
+            self.losses_mrae = AverageMeter()
+            self.losses_rmse = AverageMeter()
+            self.losses_psnr = AverageMeter()
+            self.losses_sam = AverageMeter()
+        labels = batch[self.image_key]
+        labels = Variable(labels)
+        cond = batch[self.cond_key]
+        cond = Variable(cond)
+        output, posterior = self(labels, cond)
+        output = self.sample(batch)
+        loss_mrae = criterion_mrae(output, labels).detach()
+        loss_rmse = criterion_rmse(output, labels).detach()
+        loss_psnr = criterion_psnr(output, labels).detach()
+        loss_sam = criterion_sam(output, labels).detach()
+        criterion_sam.reset()
+        criterion_psnr.reset()
+        self.log_dict({'mrae': loss_mrae, 'rmse': loss_rmse, 'psnr': loss_psnr, 'sam': loss_sam})
+        self.losses_mrae.update(loss_mrae.data)
+        self.losses_rmse.update(loss_rmse.data)
+        self.losses_psnr.update(loss_psnr.data)
+        self.losses_sam.update(loss_sam.data)
+        return self.log_dict
+    
+    def on_validation_epoch_end(self):
+        print(f'validation: MRAE: {self.losses_mrae.avg}, RMSE: {self.losses_rmse.avg}, PSNR: {self.losses_psnr.avg}, SAM: {self.losses_sam.avg}.')
+        self.log_dict({'val/mrae_avg': self.losses_mrae.avg, 'val/rmse_avg': self.losses_rmse.avg, 'val/psnr_avg': self.losses_psnr.avg, 'val/sam_avg': self.losses_sam.avg})
+    

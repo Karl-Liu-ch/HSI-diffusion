@@ -17,11 +17,11 @@ from torch.utils.data import DataLoader
 from torch.autograd import Variable
 from torch import autograd
 import functools
-from Models.Transformer.MST_Plus_Plus import MSAB
-from Models.Transformer.swin_transformer import SwinTransformerBlock
-from Models.Transformer.swin_transformer_v2 import SwinTransformerBlock as SwinTransformerBlock_v2
-from Models.Transformer.agent_swin import SwinTransformerBlock as AgentSwin
-from Models.Transformer.Base import BaseModel
+from models.transformer.MST_Plus_Plus import MSAB
+from models.transformer.swin_transformer import SwinTransformerBlock
+from models.transformer.swin_transformer_v2 import SwinTransformerBlock as SwinTransformerBlock_v2
+from models.transformer.agent_swin import SwinTransformerBlock as AgentSwin
+from models.transformer.Base import BaseModel
 from dataset.datasets import TestFullDataset
 os.environ["CUDA_DEVICE_ORDER"] = 'PCI_BUS_ID'
 if opt.multigpu:

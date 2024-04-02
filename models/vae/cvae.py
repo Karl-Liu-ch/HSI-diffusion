@@ -14,7 +14,7 @@ from torch.utils.data import DataLoader
 from torch.autograd import Variable
 from options import opt
 import numpy as np
-from Models.VAE.Base import BaseModel
+from models.vae.Base import BaseModel
 os.environ["CUDA_DEVICE_ORDER"] = 'PCI_BUS_ID'
 if opt.multigpu:
     os.environ["CUDA_VISIBLE_DEVICES"] = opt.gpu_id

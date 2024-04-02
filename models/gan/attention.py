@@ -42,7 +42,7 @@ class SpatialAttention(nn.Module):
 
     def conv(self, dim, kernel_size):
         layer = [nn.Conv2d(dim, dim // 16, kernel_size, padding=(kernel_size - 1) // 2),
-                nn.GELU(),
+                nn.ReLU(),
                 nn.Conv2d(dim // 16, 1,  kernel_size, padding=(kernel_size - 1) // 2)]
         return layer
     
@@ -61,7 +61,7 @@ class SN_ChannelAttention(ChannelAttention):
 class SN_SpatialAttention(SpatialAttention):
     def conv(self, dim, kernel_size):
         layer = [SNConv2d(dim, dim // 16, kernel_size, padding=(kernel_size - 1) // 2),
-                nn.GELU(),
+                nn.ReLU(),
                 SNConv2d(dim // 16, 1,  kernel_size, padding=(kernel_size - 1) // 2)]
         return layer
 
@@ -107,7 +107,7 @@ class MS_MSA(nn.Module):
         self.proj = SNLinear(dim_head * heads, dim, bias=True)
         self.pos_emb = nn.Sequential(
             SNConv2d(dim, dim, 3, 1, 1, bias=False, groups=dim),
-            GELU(),
+            nn.ReLU(),
             SNConv2d(dim, dim, 3, 1, 1, bias=False, groups=dim),
         )
         self.dim = dim
@@ -148,9 +148,9 @@ class FeedForward(nn.Module):
         super().__init__()
         self.net = nn.Sequential(
             SNConv2d(dim, dim * mult, 1, 1, bias=False),
-            GELU(),
+            nn.ReLU(),
             SNConv2d(dim * mult, dim * mult, 3, 1, 1, bias=False, groups=dim * mult),
-            GELU(),
+            nn.ReLU(),
             SNConv2d(dim * mult, dim, 1, 1, bias=False),
         )
 
@@ -175,7 +175,7 @@ class SN_MSAB(nn.Module):
         for _ in range(num_blocks):
             self.blocks.append(nn.ModuleList([
                 MS_MSA(dim=dim, dim_head=dim_head, heads=heads),
-                PreNorm(dim, FeedForward(dim=dim))
+                FeedForward(dim=dim)
             ]))
 
     def forward(self, x):

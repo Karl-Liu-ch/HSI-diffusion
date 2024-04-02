@@ -23,8 +23,8 @@ rule cuda_compile
 
 
 
-build /zhome/02/b/164706/Master_Courses/2023_Fall/Spectral_Reconstruction/Models/kernels/window_process/build/temp.linux-x86_64-cpython-311/swin_window_process.o: compile /zhome/02/b/164706/Master_Courses/2023_Fall/Spectral_Reconstruction/Models/kernels/window_process/swin_window_process.cpp
-build /zhome/02/b/164706/Master_Courses/2023_Fall/Spectral_Reconstruction/Models/kernels/window_process/build/temp.linux-x86_64-cpython-311/swin_window_process_kernel.o: cuda_compile /zhome/02/b/164706/Master_Courses/2023_Fall/Spectral_Reconstruction/Models/kernels/window_process/swin_window_process_kernel.cu
+build /zhome/02/b/164706/Master_Courses/thesis/HSI-diffusion/models/kernels/window_process/build/temp.linux-x86_64-cpython-311/swin_window_process.o: compile /zhome/02/b/164706/Master_Courses/thesis/HSI-diffusion/models/kernels/window_process/swin_window_process.cpp
+build /zhome/02/b/164706/Master_Courses/thesis/HSI-diffusion/models/kernels/window_process/build/temp.linux-x86_64-cpython-311/swin_window_process_kernel.o: cuda_compile /zhome/02/b/164706/Master_Courses/thesis/HSI-diffusion/models/kernels/window_process/swin_window_process_kernel.cu
 
 
 

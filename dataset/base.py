@@ -3,6 +3,7 @@ sys.path.append('./')
 import torch.nn as nn
 import torch
 import pytorch_lightning as pl
+import lightning as l
 from utils import instantiate_from_config
 from omegaconf import OmegaConf
 from torch.utils.data import random_split, DataLoader, Dataset
@@ -24,7 +25,7 @@ class WrappedDataset(Dataset):
     def __getitem__(self, idx):
         return self.data[idx]
 
-class DataModuleFromConfig(pl.LightningDataModule):
+class DataModuleFromConfig(l.LightningDataModule):
     def __init__(self, batch_size, train=None, validation=None, test=None,
                  wrap=False, num_workers=None):
         super().__init__()

@@ -73,7 +73,7 @@ class VQLPIPSWithDiscriminator(nn.Module):
         d_weight = d_weight * self.discriminator_weight
         return d_weight
 
-    def forward(self, codebook_loss, inputs, reconstructions, optimizer_idx,
+    def forward(self, inputs, reconstructions, codebook_loss, optimizer_idx,
                 global_step, last_layer=None, cond=None, split="train"):
         rec_loss = torch.abs(inputs.contiguous() - reconstructions.contiguous())
         if self.perceptual_weight > 0:

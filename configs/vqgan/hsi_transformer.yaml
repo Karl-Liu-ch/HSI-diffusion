@@ -1,0 +1,88 @@
+model:
+  base_learning_rate: 4.5e-06
+  target: taming.models.cond_transformer.Net2NetTransformer
+  params:
+    first_stage_key: label
+    cond_stage_key: cond
+    transformer_config:
+      target: taming.modules.transformer.mingpt.GPT
+      params:
+        vocab_size: 1024
+        block_size: 512
+        n_layer: 24
+        n_head: 16
+        n_embd: 1024
+    first_stage_config:
+      target: taming.models.vqgan.VQModel
+      params:
+        # ckpt_path: logs/2020-09-23T17-56-33_imagenet_vqgan/checkpoints/last.ckpt
+        embed_dim: 256
+        n_embed: 1024
+        ddconfig:
+          double_z: false
+          z_channels: 256
+          resolution: 256
+          in_channels: 31
+          out_ch: 31
+          ch: 128
+          ch_mult:
+          - 1
+          - 1
+          - 2
+          - 2
+          - 4
+          num_res_blocks: 2
+          attn_resolutions:
+          - 16
+          dropout: 0.0
+        lossconfig:
+          target: taming.modules.losses.DummyLoss
+    cond_stage_config:
+      target: taming.models.vqgan.VQModel
+      params:
+        # ckpt_path: logs/2020-11-03T15-34-24_imagenetdepth_vqgan/checkpoints/last.ckpt
+        embed_dim: 256
+        n_embed: 1024
+        ddconfig:
+          double_z: false
+          z_channels: 256
+          resolution: 256
+          in_channels: 3
+          out_ch: 3
+          ch: 128
+          ch_mult:
+          - 1
+          - 1
+          - 2
+          - 2
+          - 4
+          num_res_blocks: 2
+          attn_resolutions:
+          - 16
+          dropout: 0.0
+        lossconfig:
+          target: taming.modules.losses.DummyLoss
+
+data:
+  target: dataset.base.DataModuleFromConfig
+  params:
+    batch_size: 4
+    num_workers: 32
+    train:
+      target: dataset.datasets.TrainDataset
+      params:
+        data_root: /work3/s212645/Spectral_Reconstruction/
+        crop_size: 256
+        valid_ratio: 0.1
+        test_ratio: 0.1
+        aug: True
+        datanames: ['ARAD/']
+    validation:
+      target: dataset.datasets.ValidDataset
+      params:
+        data_root: /work3/s212645/Spectral_Reconstruction/
+        crop_size: 256
+        valid_ratio: 0.1
+        test_ratio: 0.1
+        aug: True
+        datanames: ['ARAD/']

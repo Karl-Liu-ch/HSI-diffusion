@@ -1,13 +1,24 @@
 import torch
 import torch.nn.functional as F
-import pytorch_lightning as pl
-
+import lightning as pl
+from utils import *
 from main import instantiate_from_config
 
-from taming.modules.diffusionmodules.model import Encoder, Decoder
+from taming.modules.diffusionmodules.model import Encoder, Decoder, CondEncoder, FirstStageDecoder
 from taming.modules.vqvae.quantize import VectorQuantizer2 as VectorQuantizer
 from taming.modules.vqvae.quantize import GumbelQuantize
 from taming.modules.vqvae.quantize import EMAVectorQuantizer
+
+criterion_mrae = Loss_MRAE()
+criterion_rmse = Loss_RMSE()
+criterion_psnr = Loss_PSNR()
+criterion_psnrrgb = Loss_PSNR()
+criterion_sam = Loss_SAM()
+criterion_sid = Loss_SID()
+criterion_fid = Loss_Fid().cuda()
+criterion_ssim = Loss_SSIM().cuda()
+
+device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
 class VQModel(pl.LightningModule):
     def __init__(self,
@@ -75,9 +86,6 @@ class VQModel(pl.LightningModule):
 
     def get_input(self, batch, k):
         x = batch[k]
-        if len(x.shape) == 3:
-            x = x[..., None]
-        x = x.permute(0, 3, 1, 2).to(memory_format=torch.contiguous_format)
         return x.float()
 
     def training_step(self, batch, batch_idx, optimizer_idx):
@@ -402,3 +410,185 @@ class EMAVQ(VQModel):
         opt_disc = torch.optim.Adam(self.loss.discriminator.parameters(),
                                     lr=lr, betas=(0.5, 0.9))
         return [opt_ae, opt_disc], []                                           
+    
+
+class CondVQModel(VQModel):
+    def __init__(self, ddconfig, lossconfig, n_embed, embed_dim, learning_rate, ckpt_path=None, ignore_keys=[], image_key="image", colorize_nlabels=None, monitor=None, remap=None, sane_index_shape=False):
+        super().__init__(ddconfig, lossconfig, n_embed, embed_dim, ckpt_path, ignore_keys, image_key, colorize_nlabels, monitor, remap, sane_index_shape)
+        self.encoder = CondEncoder(**ddconfig)
+        self.learning_rate = learning_rate
+        self.automatic_optimization = False
+    
+    def encode(self, x):
+        h, hs = self.encoder(x)
+        h = self.quant_conv(h)
+        quant, emb_loss, info = self.quantize(h)
+        return quant, emb_loss, info, hs
+
+    def forward(self, input):
+        quant, diff, _, condfeatures = self.encode(input)
+        dec = self.decode(quant)
+        return dec, diff, condfeatures
+
+    def training_step(self, batch, batch_idx):
+        opt_g, opt_disc = self.optimizers()
+        inputs = self.get_input(batch, self.image_key)
+
+        reconstructions, posterior, condfeatures = self(inputs)
+
+        self.toggle_optimizer(opt_g)
+        aeloss, log_dict_ae = self.loss(inputs, reconstructions, posterior, 0, self.global_step,
+                                        last_layer=self.get_last_layer(), split="train")
+        self.log("aeloss", aeloss, prog_bar=True, logger=True, on_step=True, on_epoch=True)
+        self.log_dict(log_dict_ae, prog_bar=False, logger=True, on_step=True, on_epoch=False)
+        self.manual_backward(aeloss)
+        opt_g.step()
+        opt_g.zero_grad()
+        self.untoggle_optimizer(opt_g)
+        
+            # train the discriminator
+        self.toggle_optimizer(opt_disc)
+        discloss, log_dict_disc = self.loss(inputs, reconstructions, posterior, 1, self.global_step,
+                                            last_layer=self.get_last_layer(), split="train")
+
+        self.log("discloss", discloss, prog_bar=True, logger=True, on_step=True, on_epoch=True)
+        self.log_dict(log_dict_disc, prog_bar=False, logger=True, on_step=True, on_epoch=False)
+        self.manual_backward(discloss)
+        opt_disc.step()
+        opt_disc.zero_grad()
+        self.untoggle_optimizer(opt_disc)
+
+    def validation_step(self, batch, batch_idx):
+        if batch_idx == 0:
+            self.losses_mrae = AverageMeter()
+            self.losses_rmse = AverageMeter()
+            self.losses_psnr = AverageMeter()
+            self.losses_sam = AverageMeter()
+        labels = self.get_input(batch, self.image_key)
+        output, posterior, condfeatures = self(labels)
+        loss_mrae = criterion_mrae(output, labels).detach()
+        loss_rmse = criterion_rmse(output, labels).detach()
+        loss_psnr = criterion_psnr(output, labels).detach()
+        loss_sam = criterion_sam(output, labels).detach()
+        criterion_sam.reset()
+        criterion_psnr.reset()
+        self.log_dict({'mrae': loss_mrae, 'rmse': loss_rmse, 'psnr': loss_psnr, 'sam': loss_sam})
+        self.losses_mrae.update(loss_mrae.data)
+        self.losses_rmse.update(loss_rmse.data)
+        self.losses_psnr.update(loss_psnr.data)
+        self.losses_sam.update(loss_sam.data)
+        return self.log_dict
+    
+    def on_validation_epoch_end(self):
+        print(f'validation: MRAE: {self.losses_mrae.avg}, RMSE: {self.losses_rmse.avg}, PSNR: {self.losses_psnr.avg}, SAM: {self.losses_sam.avg}.')
+        self.log_dict({'val/mrae_avg': self.losses_mrae.avg, 'val/rmse_avg': self.losses_rmse.avg, 'val/psnr_avg': self.losses_psnr.avg, 'val/sam_avg': self.losses_sam.avg})
+    
+    def log_images(self, batch, **kwargs):
+        log = dict()
+        x = self.get_input(batch, self.image_key)
+        x = x.to(self.device)
+        xrec, _, condfeatures = self(x)
+        log["inputs"] = x
+        log["reconstructions"] = xrec
+        return log
+
+def disabled_train(self, mode=True):
+    """Overwrite model.train with this function to make sure train/eval mode
+    does not change anymore."""
+    return self
+
+class FirstStageVQModel(VQModel):
+    def __init__(self, ddconfig, condconfig, lossconfig, n_embed, embed_dim, learning_rate, ckpt_path=None, ignore_keys=[], image_key="image", cond_key = "cond", colorize_nlabels=None, monitor=None, remap=None, sane_index_shape=False):
+        super().__init__(ddconfig, lossconfig, n_embed, embed_dim, ckpt_path, ignore_keys, image_key, colorize_nlabels, monitor, remap, sane_index_shape)
+        self.decoder = FirstStageDecoder(**ddconfig)
+        self.automatic_optimization = False
+        self.cond_key = cond_key
+        self.learning_rate = learning_rate
+        model = instantiate_from_config(condconfig)
+        model = model.eval()
+        model.train = disabled_train
+        self.cond_encoder = model.encoder
+        self.cond_encoder.eval()
+        del model
+        
+    def decode(self, quant, condfeatures):
+        quant = self.post_quant_conv(quant)
+        dec = self.decoder(quant, condfeatures)
+        return dec
+
+    def decode_code(self, code_b, condfeatures):
+        quant_b = self.quantize.embed_code(code_b)
+        dec = self.decode(quant_b, condfeatures)
+        return dec
+
+    def forward(self, input, cond):
+        quant, diff, _ = self.encode(input)
+        _, condfeatures = self.cond_encoder(cond)
+        dec = self.decode(quant, condfeatures)
+        return dec, diff
+
+    def training_step(self, batch, batch_idx):
+        opt_g, opt_disc = self.optimizers()
+        inputs = self.get_input(batch, self.image_key)
+        cond = self.get_input(batch, self.cond_key)
+        reconstructions, posterior = self(inputs, cond)
+
+        self.toggle_optimizer(opt_g)
+        aeloss, log_dict_ae = self.loss(inputs, reconstructions, posterior, 0, self.global_step,
+                                        last_layer=self.get_last_layer(), cond=cond, split="train")
+        self.log("aeloss", aeloss, prog_bar=True, logger=True, on_step=True, on_epoch=True)
+        self.log_dict(log_dict_ae, prog_bar=False, logger=True, on_step=True, on_epoch=False)
+        self.manual_backward(aeloss)
+        opt_g.step()
+        opt_g.zero_grad()
+        self.untoggle_optimizer(opt_g)
+        
+            # train the discriminator
+        self.toggle_optimizer(opt_disc)
+        discloss, log_dict_disc = self.loss(inputs, reconstructions, posterior, 1, self.global_step,
+                                            last_layer=self.get_last_layer(), cond=cond, split="train")
+
+        self.log("discloss", discloss, prog_bar=True, logger=True, on_step=True, on_epoch=True)
+        self.log_dict(log_dict_disc, prog_bar=False, logger=True, on_step=True, on_epoch=False)
+        self.manual_backward(discloss)
+        opt_disc.step()
+        opt_disc.zero_grad()
+        self.untoggle_optimizer(opt_disc)
+        
+    def validation_step(self, batch, batch_idx):
+        if batch_idx == 0:
+            self.losses_mrae = AverageMeter()
+            self.losses_rmse = AverageMeter()
+            self.losses_psnr = AverageMeter()
+            self.losses_sam = AverageMeter()
+        labels = self.get_input(batch, self.image_key)
+        cond = self.get_input(batch, self.cond_key)
+        output, posterior = self(labels, cond)
+        output = self.sample(batch)
+        loss_mrae = criterion_mrae(output, labels).detach()
+        loss_rmse = criterion_rmse(output, labels).detach()
+        loss_psnr = criterion_psnr(output, labels).detach()
+        loss_sam = criterion_sam(output, labels).detach()
+        criterion_sam.reset()
+        criterion_psnr.reset()
+        self.log_dict({'mrae': loss_mrae, 'rmse': loss_rmse, 'psnr': loss_psnr, 'sam': loss_sam})
+        self.losses_mrae.update(loss_mrae.data)
+        self.losses_rmse.update(loss_rmse.data)
+        self.losses_psnr.update(loss_psnr.data)
+        self.losses_sam.update(loss_sam.data)
+        return self.log_dict
+    
+    def on_validation_epoch_end(self):
+        print(f'validation: MRAE: {self.losses_mrae.avg}, RMSE: {self.losses_rmse.avg}, PSNR: {self.losses_psnr.avg}, SAM: {self.losses_sam.avg}.')
+        self.log_dict({'val/mrae_avg': self.losses_mrae.avg, 'val/rmse_avg': self.losses_rmse.avg, 'val/psnr_avg': self.losses_psnr.avg, 'val/sam_avg': self.losses_sam.avg})
+    
+    def log_images(self, batch, **kwargs):
+        log = dict()
+        x = self.get_input(batch, self.image_key)
+        cond = self.get_input(batch, self.cond_key)
+        x = x.to(self.device)
+        cond = cond.to(self.device)
+        xrec, _ = self(x, cond)
+        log["inputs"] = x
+        log["reconstructions"] = xrec
+        return log

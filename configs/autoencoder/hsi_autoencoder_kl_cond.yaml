@@ -1,0 +1,67 @@
+path: /work3/s212645/Spectral_Reconstruction/checkpoint/ldm/cond/logs
+model:
+  base_learning_rate: 4.5e-6
+  target: ldm.models.autoencoder.CondAutoencoderKL
+  params:
+    learning_rate: 4.0e-4
+    image_key: cond
+    monitor: "val/rec_loss"
+    embed_dim: 64
+    lossconfig:
+      target: ldm.modules.losses.LPIPSWithDiscriminator
+      params:
+        disc_in_channels: 3
+        disc_start: 50001
+        kl_weight: 0.000001
+        disc_weight: 0.5
+        perceptual_weight: 0
+
+    ddconfig:
+      double_z: True
+      z_channels: 64
+      resolution: 256
+      in_channels: 3
+      out_ch: 3
+      ch: 128
+      ch_mult: [ 1,2,4 ]  # num_down = len(ch_mult)-1
+      num_res_blocks: 2
+      attn_resolutions: [ ]
+      dropout: 0.0
+
+
+data:
+  target: dataset.base.DataModuleFromConfig
+  params:
+    batch_size: 4
+    num_workers: 32
+    train:
+      target: dataset.datasets.TrainDataset
+      params:
+        data_root: /work3/s212645/Spectral_Reconstruction/
+        crop_size: 256
+        valid_ratio: 0.1
+        test_ratio: 0.1
+        aug: True
+        datanames: ['ARAD/']
+    validation:
+      target: dataset.datasets.ValidDataset
+      params:
+        data_root: /work3/s212645/Spectral_Reconstruction/
+        crop_size: 256
+        valid_ratio: 0.1
+        test_ratio: 0.1
+        aug: True
+        datanames: ['ARAD/']
+
+lightning:
+  callbacks:
+    image_logger:
+      target: main.ImageLogger
+      params:
+        batch_frequency: 1000
+        max_images: 8
+        increase_log_steps: True
+
+  trainer:
+    benchmark: True
+    accumulate_grad_batches: 2

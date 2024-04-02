@@ -19,7 +19,7 @@ data:
   target: dataset.base.DataModuleFromConfig
   params:
     batch_size: 8
-    num_workers: 2
+    num_workers: 32
     train:
       target: dataset.datasets.TrainDataset
       params:

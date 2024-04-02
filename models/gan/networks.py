@@ -207,13 +207,13 @@ class SN_Discriminator(nn.Module):
         nn.init.xavier_uniform_(self.conv3.weight.data, 1.)
         nn.init.xavier_uniform_(self.conv4.weight.data, 1.)
         self.Net = nn.Sequential(
-            nn.utils.parametrizations.spectral_norm(self.conv1),
+            nn.utils.spectral_norm(self.conv1),
             nn.ReLU(True),
-            nn.utils.parametrizations.spectral_norm(self.conv2),
+            nn.utils.spectral_norm(self.conv2),
             nn.ReLU(True),
-            nn.utils.parametrizations.spectral_norm(self.conv3),
+            nn.utils.spectral_norm(self.conv3),
             nn.ReLU(True),
-            nn.utils.parametrizations.spectral_norm(self.conv4),
+            nn.utils.spectral_norm(self.conv4),
             nn.ReLU(True),
         )
         
@@ -241,18 +241,18 @@ class SN_Discriminator_perceptualLoss(nn.Module):
         nn.init.xavier_uniform_(self.conv3.weight.data, 1.)
         nn.init.xavier_uniform_(self.conv4.weight.data, 1.)
         self.slice1 = nn.Sequential(
-            nn.utils.parametrizations.spectral_norm(self.conv1),
+            nn.utils.spectral_norm(self.conv1),
             nn.ReLU(True))
         self.slice2 = nn.Sequential(
-            nn.utils.parametrizations.spectral_norm(self.conv2),
+            nn.utils.spectral_norm(self.conv2),
             nn.ReLU(True),
         )
         self.slice3 = nn.Sequential(
-            nn.utils.parametrizations.spectral_norm(self.conv3),
+            nn.utils.spectral_norm(self.conv3),
             nn.ReLU(True)
         )
         self.slice4 = nn.Sequential(
-            nn.utils.parametrizations.spectral_norm(self.conv4),
+            nn.utils.spectral_norm(self.conv4),
             nn.ReLU(True),
         )
         
@@ -388,35 +388,6 @@ class SNPixelDiscriminator(nn.Module):
         """Standard forward."""
         return self.net(input)
 
-# class SNResnetDiscriminator(nn.Module):
-#     def __init__(self, input_nums, n_layer=6):
-#         super().__init__()
-        
-#         model = []
-#         model += self.ResBlock(input_nums, 64, n_blocks=6)
-#         new_ch = 64
-#         for i in range(3):
-#             prev_ch = new_ch
-#             new_ch = prev_ch * 2
-#             model += self.ResBlock(prev_ch, new_ch, n_blocks=6)
-        
-#         model += [ SNConv2d(new_ch, 1, kernel_size=(4, 4), stride=(1, 1), padding=(0, 0)),
-#                         nn.AdaptiveAvgPool2d((1, 1)), 
-#                         nn.Flatten() ]
-#         self.Net = nn.Sequential(*model)
-
-#     def ResBlock(self, input_nums, output_nums, n_blocks = 1):
-#         layer = []
-#         layer.append(SNConv2d(input_nums, output_nums, kernel_size=(3, 3), stride=(2, 2), padding=(1, 1)))
-#         layer.append(nn.ReLU(True))
-#         for i in range(n_blocks):
-#             layer += [SNResnetBlock(output_nums, padding_type='reflect', use_dropout=False, use_bias=True), nn.ReLU(True)]
-#         return layer
-    
-#     def forward(self, input):
-#         output = self.Net(input)
-#         return output
-
 class ResnetBlock(nn.Module):
     """Define a Resnet block"""
 
@@ -509,13 +480,13 @@ class SNResnetDiscriminator_perceptualLoss(nn.Module):
         super().__init__()
         def ResBlock(input_nums, output_nums, n_blocks = 1):
             layer = []
-            layer.append(SNConv2d(input_nums, output_nums, kernel_size=(3, 3), stride=(2, 2), padding=(1, 1)))
-            layer.append(nn.ReLU(True))
             for i in range(n_blocks):
-                layer += [SNResnetBlock(output_nums, padding_type='reflect', use_dropout=False, use_bias=True), nn.ReLU(True)]
+                layer += [SNResnetBlock(input_nums, padding_type='reflect', use_dropout=False, use_bias=True), nn.ReLU(True)]
+            layer.append(SNConv2d(input_nums, output_nums, kernel_size=(4, 4), stride=(2, 2), padding=(1, 1)))
+            layer.append(nn.ReLU(True))
             return layer
         
-        self.layer1 = nn.Sequential(*ResBlock(input_nums, 64, n_blocks=1))
+        self.layer1 = SNConv2d(input_nums, 64, kernel_size=1, stride=1, padding=0)
         new_ch = 64
         self.resblocks = nn.ModuleList()
         for i in range(n_layer):
@@ -523,11 +494,45 @@ class SNResnetDiscriminator_perceptualLoss(nn.Module):
             new_ch = prev_ch * 2
             self.resblocks.append(nn.ModuleList(ResBlock(prev_ch, new_ch, n_blocks=n_block)))
         
-        self.out = nn.Sequential(SNConv2d(new_ch, 1, kernel_size=(4, 4), stride=(1, 1), padding=(0, 0)),
+        self.out = nn.Sequential(SNConv2d(new_ch, new_ch, kernel_size=(4, 4), stride=(1, 1), padding=(0, 0)),
                         nn.AdaptiveAvgPool2d((1, 1)), 
-                        nn.Flatten())
-        # self.perceptual_layer = nn.Sequential(nn.AdaptiveAvgPool2d((1, 1)), 
-        #                 nn.Flatten())
+                        nn.Flatten(), 
+                        SNLinear(new_ch, 1))
+
+    def forward(self, input):
+        output = self.layer1(input)
+        features = [output]
+        for layers in self.resblocks:
+            for layer in layers:
+                output = layer(output)
+            features.append(output)
+        output = self.out(output)
+        return output, features
+
+class SNTransformDiscriminator_perceptual(nn.Module):
+    def __init__(self, input_nums = 34, n_layer = 3):
+        super().__init__()
+        def AttnBlock(dim, input_nums, output_nums, n_blocks = 1):
+            layer = []
+            layer += [SN_MSAB(input_nums, dim, input_nums // dim, n_blocks)]
+            layer.append(SNConv2d(input_nums, output_nums, kernel_size=(3, 3), stride=(2, 2), padding=(1, 1)))
+            layer.append(nn.ReLU())
+            return layer
+        
+        self.layer1 = SNConv2d(input_nums, input_nums, kernel_size=1, stride=1, padding=0)
+        new_ch = input_nums
+        self.resblocks = nn.ModuleList()
+        for i in range(n_layer):
+            prev_ch = new_ch
+            new_ch = prev_ch * 2
+            self.resblocks.append(nn.ModuleList(AttnBlock(input_nums, prev_ch, new_ch)))
+        
+        self.out = nn.Sequential(
+                        SNConv2d(new_ch, new_ch, kernel_size=(4, 4), stride=(1, 1), padding=(0, 0)),
+                        nn.AdaptiveAvgPool2d((1, 1)), 
+                        nn.Flatten(), 
+                        SNLinear(new_ch, 1)
+                        )
 
     def forward(self, input):
         output = self.layer1(input)

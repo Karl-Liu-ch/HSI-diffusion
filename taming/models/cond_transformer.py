@@ -1,7 +1,7 @@
 import os, math
 import torch
 import torch.nn.functional as F
-import pytorch_lightning as pl
+import lightning as pl
 
 from main import instantiate_from_config
 from taming.modules.util import SOSProvider
@@ -80,7 +80,7 @@ class Net2NetTransformer(pl.LightningModule):
     def forward(self, x, c):
         # one step to produce the logits
         _, z_indices = self.encode_to_z(x)
-        _, c_indices = self.encode_to_c(c)
+        _, c_indices, condfeatures = self.encode_to_c(c)
 
         if self.training and self.pkeep < 1.0:
             mask = torch.bernoulli(self.pkeep*torch.ones(z_indices.shape,
@@ -101,7 +101,7 @@ class Net2NetTransformer(pl.LightningModule):
         # cut off conditioning outputs - output i corresponds to p(z_i | z_{<i}, c)
         logits = logits[:, c_indices.shape[1]-1:]
 
-        return logits, target
+        return logits, target, condfeatures
 
     def top_k_logits(self, logits, k):
         v, ix = torch.topk(logits, k)
@@ -176,18 +176,18 @@ class Net2NetTransformer(pl.LightningModule):
     def encode_to_c(self, c):
         if self.downsample_cond_size > -1:
             c = F.interpolate(c, size=(self.downsample_cond_size, self.downsample_cond_size))
-        quant_c, _, [_,_,indices] = self.cond_stage_model.encode(c)
+        quant_c, _, [_,_,indices], features = self.cond_stage_model.encode(c)
         if len(indices.shape) > 2:
             indices = indices.view(c.shape[0], -1)
-        return quant_c, indices
+        return quant_c, indices, features
 
     @torch.no_grad()
-    def decode_to_img(self, index, zshape):
+    def decode_to_img(self, index, zshape, condfeatures):
         index = self.permuter(index, reverse=True)
         bhwc = (zshape[0],zshape[2],zshape[3],zshape[1])
         quant_z = self.first_stage_model.quantize.get_codebook_entry(
             index.reshape(-1), shape=bhwc)
-        x = self.first_stage_model.decode(quant_z)
+        x = self.first_stage_model.decode(quant_z, condfeatures)
         return x
 
     @torch.no_grad()
@@ -203,7 +203,7 @@ class Net2NetTransformer(pl.LightningModule):
         c = c.to(device=self.device)
 
         quant_z, z_indices = self.encode_to_z(x)
-        quant_c, c_indices = self.encode_to_c(c)
+        quant_c, c_indices, condfeatures = self.encode_to_c(c)
 
         # create a "half"" sample
         z_start_indices = z_indices[:,:z_indices.shape[1]//2]
@@ -213,7 +213,7 @@ class Net2NetTransformer(pl.LightningModule):
                                    sample=True,
                                    top_k=top_k if top_k is not None else 100,
                                    callback=callback if callback is not None else lambda k: None)
-        x_sample = self.decode_to_img(index_sample, quant_z.shape)
+        x_sample = self.decode_to_img(index_sample, quant_z.shape, condfeatures)
 
         # sample
         z_start_indices = z_indices[:, :0]
@@ -223,7 +223,7 @@ class Net2NetTransformer(pl.LightningModule):
                                    sample=True,
                                    top_k=top_k if top_k is not None else 100,
                                    callback=callback if callback is not None else lambda k: None)
-        x_sample_nopix = self.decode_to_img(index_sample, quant_z.shape)
+        x_sample_nopix = self.decode_to_img(index_sample, quant_z.shape, condfeatures)
 
         # det sample
         z_start_indices = z_indices[:, :0]
@@ -231,10 +231,10 @@ class Net2NetTransformer(pl.LightningModule):
                                    steps=z_indices.shape[1],
                                    sample=False,
                                    callback=callback if callback is not None else lambda k: None)
-        x_sample_det = self.decode_to_img(index_sample, quant_z.shape)
+        x_sample_det = self.decode_to_img(index_sample, quant_z.shape, condfeatures)
 
         # reconstruction
-        x_rec = self.decode_to_img(z_indices, quant_z.shape)
+        x_rec = self.decode_to_img(z_indices, quant_z.shape, condfeatures)
 
         log["inputs"] = x
         log["reconstructions"] = x_rec

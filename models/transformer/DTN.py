@@ -18,8 +18,11 @@ from torch.autograd import Variable
 from torch import autograd
 import functools
 from models.transformer.MST_Plus_Plus import MSAB
+from models.transformer.SN_MST_Plus_Plus import MSAB as SN_MSAB
+from models.gan.SpectralNormalization import SNLinear, SNConv2d, SNConvTranspose2d
 from models.transformer.swin_transformer import SwinTransformerBlock
 from models.transformer.swin_transformer_v2 import SwinTransformerBlock as SwinTransformerBlock_v2
+from models.transformer.sn_swin_transformer_v2 import SwinTransformerBlock as SN_SwinTransformerBlock
 from models.transformer.agent_swin import SwinTransformerBlock as AgentSwin
 from models.transformer.Base import BaseModel
 from dataset.datasets import TestFullDataset
@@ -42,6 +45,60 @@ criterion_sid = Loss_SID()
 criterion_fid = Loss_Fid().to(device)
 criterion_ssim = Loss_SSIM().to(device)
 
+class SpatialGate(nn.Module):
+    """ Spatial-Gate.
+    Args:
+        dim (int): Half of input channels.
+    """
+    def __init__(self, dim):
+        super().__init__()
+        self.norm = nn.LayerNorm(dim)
+        self.conv = nn.Conv2d(dim, dim, kernel_size=3, stride=1, padding=1, groups=dim) # DW Conv
+
+    def forward(self, x, H, W):
+        # Split
+        x1, x2 = x.chunk(2, dim = -1)
+        B, N, C = x.shape
+        x2 = self.conv(self.norm(x2).transpose(1, 2).contiguous().view(B, C//2, H, W)).flatten(2).transpose(-1, -2).contiguous()
+        
+        return x1 * x2
+
+
+class SGFN(nn.Module):
+    """ Spatial-Gate Feed-Forward Network.
+    Args:
+        in_features (int): Number of input channels.
+        hidden_features (int | None): Number of hidden channels. Default: None
+        out_features (int | None): Number of output channels. Default: None
+        act_layer (nn.Module): Activation layer. Default: nn.GELU
+        drop (float): Dropout rate. Default: 0.0
+    """
+    def __init__(self, in_features, hidden_features=None, out_features=None, act_layer=nn.GELU, drop=0.):
+        super().__init__()
+        out_features = out_features or in_features
+        hidden_features = hidden_features or in_features
+        self.fc1 = nn.Linear(in_features, hidden_features)
+        self.act = act_layer()
+        self.sg = SpatialGate(hidden_features//2)
+        self.fc2 = nn.Linear(hidden_features//2, out_features)
+        self.drop = nn.Dropout(drop)
+
+    def forward(self, x, H, W):
+        """
+        Input: x: (B, H*W, C), H, W
+        Output: x: (B, H*W, C)
+        """
+        x = self.fc1(x)
+        x = self.act(x)
+        x = self.drop(x)
+
+        x = self.sg(x, H, W)
+        x = self.drop(x)
+
+        x = self.fc2(x)
+        x = self.drop(x)
+        return x
+
 class SWTB(nn.Module):
     def __init__(self, dim, input_resolution, num_heads=1, window_size=8):
         super().__init__()
@@ -49,6 +106,7 @@ class SWTB(nn.Module):
         # self.model = SwinTransformerBlock(dim=dim, input_resolution=input_resolution, num_heads=num_heads, window_size=window_size)
         self.model = SwinTransformerBlock_v2(dim=dim, input_resolution=input_resolution, num_heads=num_heads, window_size=window_size)
         # self.model = AgentSwin(dim=dim, input_resolution=input_resolution, num_heads=num_heads, window_size=window_size)
+        # agent swin for later
         
     def forward(self, x):
         B, C, H, W = x.shape
@@ -57,44 +115,6 @@ class SWTB(nn.Module):
         x = self.model(x)
         x = rearrange(x, 'b (h w) c -> b c h w', h=H, w=W)
         return x
-
-class ChannelAtten(nn.Module):
-    def __init__(self, dim):
-        super().__init__()
-        self.channel_interaction = nn.Sequential(
-            nn.AdaptiveAvgPool2d(1),
-            nn.Conv2d(dim, dim // 8, kernel_size=1),
-            nn.GELU(),
-            nn.Conv2d(dim // 8, dim, kernel_size=1),
-        )
-    
-    def forward(self, x):
-        return self.channel_interaction(x)
-
-class SpatialAtten(nn.Module):
-    def __init__(self, dim):
-        super().__init__()
-        self.spatial_interaction = nn.Sequential(
-            nn.Conv2d(dim, dim // 16, kernel_size=1),
-            nn.BatchNorm2d(dim // 16),
-            nn.GELU(),
-            nn.Conv2d(dim // 16, 1, kernel_size=1)
-        )
-    
-    def forward(self, x):
-        return self.spatial_interaction(x)
-
-class DWCONV(nn.Module):
-    def __init__(self, dim):
-        super().__init__()
-        self.dwconv = nn.Sequential(
-            nn.Conv2d(dim, dim, kernel_size=3, stride=1, padding=1,groups=dim),
-            nn.BatchNorm2d(dim),
-            nn.GELU()
-        )
-    
-    def forward(self, x):
-        return self.dwconv(x)
 
 class Adaptive_SWTB(nn.Module):
     def __init__(self, dim=31, 
@@ -111,22 +131,12 @@ class Adaptive_SWTB(nn.Module):
             nn.BatchNorm2d(dim),
             nn.GELU()
         )
+        self.norm = nn.LayerNorm(dim)
         self.avgpool = nn.AdaptiveAvgPool2d(1)
         self.maxpool = nn.AdaptiveMaxPool2d(1)
+        self.proj = nn.Linear(dim, dim)
         self.channel_interaction = nn.Sequential(
             nn.Conv2d(dim * 2, dim // 8, kernel_size=1),
-            nn.GELU(),
-            nn.Conv2d(dim // 8, dim, kernel_size=1),
-        )
-        self.channel_interaction_avg = nn.Sequential(
-            nn.AdaptiveAvgPool2d(1),
-            nn.Conv2d(dim, dim // 8, kernel_size=1),
-            nn.GELU(),
-            nn.Conv2d(dim // 8, dim, kernel_size=1),
-        )
-        self.channel_interaction_max = nn.Sequential(
-            nn.AdaptiveMaxPool2d(1),
-            nn.Conv2d(dim, dim // 8, kernel_size=1),
             nn.GELU(),
             nn.Conv2d(dim // 8, dim, kernel_size=1),
         )
@@ -136,20 +146,33 @@ class Adaptive_SWTB(nn.Module):
             nn.GELU(),
             nn.Conv2d(dim // 16, 1, kernel_size=1)
         )
+        self.norm2 = nn.LayerNorm(dim)
+        self.ffn = SGFN(in_features=dim, hidden_features=dim*2)
     
-    def forward(self, x):
+    def forward(self, x_in):
+        B, C, H, W = x_in.shape
+        x = self.norm(rearrange(x_in, 'b c h w -> b (h w) c'))
+        x = rearrange(x, 'b (h w) c -> b c h w', h = H, w = W)
         B, C, H, W = x.shape
         attnx = self.model(x)
         convx = self.dwconv(x)
         pool = torch.concat([self.avgpool(convx), self.maxpool(convx)], dim = 1)
-        channelinter = F.softmax(self.channel_interaction(pool), dim = 1)
-        # channelinter = torch.sigmoid(self.channel_interaction(pool))
-        # channelinter = torch.sigmoid(self.channel_interaction_avg(convx) + self.channel_interaction_max(convx))
-        spatialinter = F.softmax(self.spatial_interaction(convx).view(B, 1, H*W), dim=-1).view(B, 1, H, W)
-        # spatialinter = torch.sigmoid(self.spatial_interaction(convx))
+
+        # channelinter = F.softmax(self.channel_interaction(pool), dim = 1)
+        # spatialinter = F.softmax(self.spatial_interaction(convx).view(B, 1, H*W), dim=-1).view(B, 1, H, W)
+
+        channelinter = torch.sigmoid(self.channel_interaction(pool))
+        spatialinter = torch.sigmoid(self.spatial_interaction(convx))
+        
         channelx = attnx * channelinter
         spatialx = convx * spatialinter
-        return channelx + spatialx
+        out = self.proj(rearrange(channelx, 'b c h w -> b (h w) c') + rearrange(spatialx, 'b c h w -> b (h w) c'))
+        out = rearrange(out, 'b (h w) c -> b c h w', h = H, w = W)
+        out += x_in
+        ff = self.norm2(rearrange(out.clone(), 'b c h w -> b (h w) c'))
+        ff = self.ffn(ff, H, W)
+        out += rearrange(ff, 'b (h w) c -> b c h w', h = H, w = W)
+        return out
 
 class Adaptive_MSAB(nn.Module):
     def __init__(self, dim=31, 
@@ -160,26 +183,16 @@ class Adaptive_MSAB(nn.Module):
         self.model = MSAB(dim=dim, num_blocks=num_blocks, dim_head=dim_head, heads=heads)
         
         self.dwconv = nn.Sequential(
-            nn.Conv2d(dim, dim, kernel_size=3, stride=1, padding=1,groups=dim),
+            nn.Conv2d(dim, dim, kernel_size=3, stride=1, padding=1, groups=dim),
             nn.BatchNorm2d(dim),
             nn.GELU()
         )
+        self.norm = nn.LayerNorm(dim)
         self.avgpool = nn.AdaptiveAvgPool2d(1)
         self.maxpool = nn.AdaptiveMaxPool2d(1)
+        self.proj = nn.Linear(dim, dim)
         self.channel_interaction = nn.Sequential(
             nn.Conv2d(dim * 2, dim // 8, kernel_size=1),
-            nn.GELU(),
-            nn.Conv2d(dim // 8, dim, kernel_size=1),
-        )
-        self.channel_interaction_avg = nn.Sequential(
-            nn.AdaptiveAvgPool2d(1),
-            nn.Conv2d(dim, dim // 8, kernel_size=1),
-            nn.GELU(),
-            nn.Conv2d(dim // 8, dim, kernel_size=1),
-        )
-        self.channel_interaction_max = nn.Sequential(
-            nn.AdaptiveMaxPool2d(1),
-            nn.Conv2d(dim, dim // 8, kernel_size=1),
             nn.GELU(),
             nn.Conv2d(dim // 8, dim, kernel_size=1),
         )
@@ -189,20 +202,32 @@ class Adaptive_MSAB(nn.Module):
             nn.GELU(),
             nn.Conv2d(dim // 16, 1, kernel_size=1)
         )
+        self.norm2 = nn.LayerNorm(dim)
+        self.ffn = SGFN(in_features=dim, hidden_features=dim*2)
         
-    def forward(self, x):
-        B, C, H, W = x.shape
+    def forward(self, x_in):
+        B, C, H, W = x_in.shape
+        x = self.norm(rearrange(x_in, 'b c h w -> b (h w) c'))
+        x = rearrange(x, 'b (h w) c -> b c h w', h = H, w = W)
         attnx = self.model(x)
         convx = self.dwconv(x)
         pool = torch.concat([self.avgpool(convx), self.maxpool(convx)], dim = 1)
-        channelinter = F.softmax(self.channel_interaction(pool), dim = 1)
-        # channelinter = torch.sigmoid(self.channel_interaction(pool))
-        # channelinter = torch.sigmoid(self.channel_interaction_avg(convx) + self.channel_interaction_max(convx))
-        spatialinter = F.softmax(self.spatial_interaction(convx).view(B, 1, H*W), dim=-1).view(B, 1, H, W)
-        # spatialinter = torch.sigmoid(self.spatial_interaction(convx)
+
+        # channelinter = F.softmax(self.channel_interaction(pool), dim = 1)
+        # spatialinter = F.softmax(self.spatial_interaction(convx).view(B, 1, H*W), dim=-1).view(B, 1, H, W)
+
+        channelinter = torch.sigmoid(self.channel_interaction(pool))
+        spatialinter = torch.sigmoid(self.spatial_interaction(convx))
+
         channelx = convx * channelinter
         spatialx = attnx * spatialinter
-        return channelx + spatialx
+        out = self.proj(rearrange(channelx, 'b c h w -> b (h w) c') + rearrange(spatialx, 'b c h w -> b (h w) c'))
+        out = rearrange(out, 'b (h w) c -> b c h w', h = H, w = W)
+        out += x_in
+        ff = self.norm2(rearrange(out.clone(), 'b c h w -> b (h w) c'))
+        ff = self.ffn(ff, H, W)
+        out += rearrange(ff, 'b (h w) c -> b c h w', h = H, w = W)
+        return out
 
 class DTNBlock(nn.Module):
     def __init__(self, dim, dim_head, input_resolution, num_heads, window_size, num_block):
@@ -226,8 +251,8 @@ class DownSample(nn.Module):
         super().__init__()
         self.model = nn.Sequential(
             nn.Conv2d(inchannel, outchannel, kernel_size=4, stride=2, padding=1, bias=False),
-            nn.BatchNorm2d(outchannel), 
-            nn.ReLU(True)
+            # nn.BatchNorm2d(outchannel), 
+            # nn.ReLU(True)
         )
         
     def forward(self, x):
@@ -237,8 +262,8 @@ class UpSample(nn.Module):
         super().__init__()
         self.model = nn.Sequential(
             nn.ConvTranspose2d(inchannel, outchannel, kernel_size=4, stride=2, padding=1, bias=False),
-            nn.BatchNorm2d(outchannel), 
-            nn.ReLU(True)
+            # nn.BatchNorm2d(outchannel), 
+            # nn.ReLU(True)
         )
         
     def forward(self, x):
@@ -249,12 +274,12 @@ def ReverseTuples(tuples):
     return new_tup
 
 class DTN(nn.Module):
-    def __init__(self, *, in_dim, 
+    def __init__(self, in_dim, 
                  out_dim,
                  img_size = [128, 128], 
                  window_size = 8, 
                  n_block=[2,2,2,2], 
-                 bottleblock = 4, **ignorekwargs):
+                 bottleblock = 4):
         super().__init__()
         dim = out_dim
         self.embedding = nn.Conv2d(in_dim, dim, 3, 1, 1, bias=False)
@@ -418,30 +443,63 @@ class TrainDTN(BaseModel):
         return losses_mrae.avg, losses_rmse.avg, losses_psnr.avg, losses_sam.avg, losses_sid.avg, losses_fid.avg, losses_ssim.avg, losses_psnrrgb.avg
 
 
+class DTN_multi_stage(nn.Module):
+    def __init__(self, in_channels=3, out_channels=31, n_feat=31, stage=3, img_size=[128, 128], window = 32):
+        super(DTN_multi_stage, self).__init__()
+        self.stage = stage
+        self.conv_in = nn.Conv2d(in_channels, n_feat, kernel_size=3, padding=(3 - 1) // 2,bias=False)
+        self.hb, self.wb = window, window
+        pad_h = (self.hb - img_size[0] % self.hb) % self.hb
+        pad_w = (self.wb - img_size[1] % self.wb) % self.wb
+        modules_body = [DTN(in_dim=n_feat, 
+                            out_dim=out_channels,
+                            img_size = [img_size[0]+pad_h, img_size[1]+pad_w], 
+                            window_size = 8, 
+                            n_block=[1,1], 
+                            bottleblock = 1) for _ in range(stage)]
+        self.body = nn.Sequential(*modules_body)
+        self.conv_out = nn.Conv2d(n_feat * 2, out_channels, kernel_size=3, padding=(3 - 1) // 2,bias=False)
+
+    def forward(self, x):
+        """
+        x: [b,c,h,w]
+        return out:[b,c,h,w]
+        """
+        b, c, h_inp, w_inp = x.shape
+        pad_h = (self.hb - h_inp % self.hb) % self.hb
+        pad_w = (self.wb - w_inp % self.wb) % self.wb
+        x = F.pad(x, [0, pad_w, 0, pad_h], mode='reflect')
+        x = self.conv_in(x)
+        h = self.body(x)
+        h = self.conv_out(torch.concat([h, x], dim=1))
+        # h += x
+        return h[:, :, :h_inp, :w_inp]
+
 if __name__ == '__main__':
     model = DTN(in_dim=3, 
                     out_dim=31,
                     img_size=[128, 128], 
                     window_size=8, 
                     n_block=[2,2,2,2], 
-                    bottleblock = 4)
-    input = torch.rand([1, 3, 128, 128])
-    output = model(input)
+                    bottleblock = 4).to(device)
+    model = DTN_multi_stage(in_channels=3, out_channels=31, n_feat=31, img_size=[36, 36], window=32).to(device)
+    input = torch.rand([1, 3, 36, 36]).to(device)
+    output = model(input.float())
     print(output.shape)
-    spec = TrainDTN(opt, model, model_name='DTN')
-    if opt.loadmodel:
-        try:
-            spec.load_checkpoint()
-        except:
-            print('pretrained model loading failed')
-    if opt.mode == 'train':
-        spec.train()
-        spec.load_checkpoint(best=True)
-        spec.test()
-        spec.test_full_resol()
-    elif opt.mode == 'test':
-        spec.load_checkpoint(best=True)
-        spec.test()
-    elif opt.mode == 'testfull':
-        spec.load_checkpoint(best=True)
-        spec.test_full_resol()
+    # spec = TrainDTN(opt, model, model_name='DTN')
+    # if opt.loadmodel:
+    #     try:
+    #         spec.load_checkpoint()
+    #     except:
+    #         print('pretrained model loading failed')
+    # if opt.mode == 'train':
+    #     spec.train()
+    #     spec.load_checkpoint(best=True)
+    #     spec.test()
+    #     spec.test_full_resol()
+    # elif opt.mode == 'test':
+    #     spec.load_checkpoint(best=True)
+    #     spec.test()
+    # elif opt.mode == 'testfull':
+    #     spec.load_checkpoint(best=True)
+    #     spec.test_full_resol()
