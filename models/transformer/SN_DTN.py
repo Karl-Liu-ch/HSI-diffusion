@@ -26,13 +26,13 @@ from models.transformer.sn_swin_transformer_v2 import SwinTransformerBlock as SN
 # from models.transformer.agent_swin import SwinTransformerBlock as AgentSwin
 from models.transformer.Base import BaseModel
 from dataset.datasets import TestFullDataset
-from pynvml import *
-nvmlInit()
-h = nvmlDeviceGetHandleByIndex(1)
-info = nvmlDeviceGetMemoryInfo(h)
-print(f'total    : {info.total}')
-print(f'free     : {info.free}')
-print(f'used     : {info.used}')
+# from pynvml import *
+# nvmlInit()
+# h = nvmlDeviceGetHandleByIndex(1)
+# info = nvmlDeviceGetMemoryInfo(h)
+# print(f'total    : {info.total}')
+# print(f'free     : {info.free}')
+# print(f'used     : {info.used}')
 
 os.environ["CUDA_DEVICE_ORDER"] = 'PCI_BUS_ID'
 if opt.multigpu:

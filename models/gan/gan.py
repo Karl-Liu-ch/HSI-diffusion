@@ -38,6 +38,7 @@ class Gan():
     def __init__(self, *, 
                  genconfig, 
                  disconfig, 
+                 lossconfig,
                  end_epoch, 
                  ckpath, 
                  learning_rate, 
@@ -45,16 +46,19 @@ class Gan():
                  patch_size, 
                  datanames, 
                  batch_size, 
+                 loss_type = 'wasserstein',
                  valid_ratio = 0.1, 
                  test_ratio = 0.1,
                  multigpu = False, 
-                 noise = False, **kargs):
+                 noise = False, 
+                 use_feature = True, **kargs):
         super().__init__()
         self.multiGPU = multigpu
         self.valid_ratio = valid_ratio
         self.test_ratio = test_ratio
         self.G = instantiate_from_config(genconfig)
         self.D = instantiate_from_config(disconfig)
+        self.loss = instantiate_from_config(lossconfig)
         if self.multiGPU:
             self.G = nn.DataParallel(self.G)
             self.D = nn.DataParallel(self.D)
@@ -72,12 +76,10 @@ class Gan():
         self.patch_size = patch_size
         self.batch_size = batch_size
         
-        self.lambdal1 = 40
-        self.lambdasam = 1
-        self.lambdaperceptual = 0.0
-        self.lambda_disc = 0.0
         self.lossl1 = criterion_mrae
         self.loss_min = None
+        self.loss_type = loss_type
+        self.use_feature = use_feature
         
         self.optimG = optim.Adam(self.G.parameters(), lr=learning_rate, betas=(0.9, 0.999))
         self.schedulerG = torch.optim.lr_scheduler.CosineAnnealingLR(self.optimG, self.total_iteration, eta_min=1e-6)
@@ -108,7 +110,7 @@ class Gan():
         print("Validation set samples: ", len(self.val_data))
         
     def get_last_layer(self):
-        return self.G.mapping.convout.weight_orig
+        return self.G.conv_out.convout.weight_orig
 
     def calculate_adaptive_weight(self, rec_loss, g_loss, last_layer=None):
         if last_layer is not None:
@@ -122,7 +124,7 @@ class Gan():
         d_weight = torch.clamp(d_weight, 0.0, 1e4).detach()
         # d_weight = d_weight * self.discriminator_weight
         return d_weight
-
+    
     def train(self):
         self.load_dataset()
         while self.epoch<self.end_epoch:
@@ -143,52 +145,54 @@ class Gan():
                     z = Variable(z)
                 else:
                     z = images
-                realAB = torch.concat([images, labels], dim=1)
+                # realAB = torch.concat([images, labels], dim=1)
                 # D_real, D_real_feature = self.D(realAB)
                 x_fake = self.G(z)
-                fakeAB = torch.concat([images, x_fake],dim=1)
-                
-                # train D
-                for p in self.D.parameters():
-                    p.requires_grad = True
-                self.optimD.zero_grad()
-                D_real, D_real_feature = self.D(realAB)
-                loss_real = -D_real.mean(0).view(1)
-                D_fake, D_fake_feature = self.D(fakeAB.detach())
-                loss_fake = D_fake.mean(0).view(1)
-                perceptual_loss = 0
-                for k in range(len(D_fake_feature)):
-                    perceptual_loss -= nn.MSELoss()(D_real_feature[k], D_fake_feature[k])
-                loss_d = loss_real + loss_fake + perceptual_loss * self.lambda_disc
-                loss_d.backward()
-                self.optimD.step()
+                # fakeAB = torch.concat([images, x_fake],dim=1)
                 
                 # train G
                 self.optimG.zero_grad()
                 lrG = self.optimG.param_groups[0]['lr']
-                for p in self.D.parameters():
-                    p.requires_grad = False
-                pred_fake, D_fake_feature = self.D(fakeAB)
-                loss_G = -pred_fake.mean(0).view(1)
-                lossl1 = self.lossl1(x_fake, labels) * self.lambdal1
-                losssam = SAM(x_fake, labels) * self.lambdasam
-                perceptual_loss = 0
-                for k in range(len(D_fake_feature)):
-                    perceptual_loss += nn.MSELoss()(D_real_feature[k].detach(), D_fake_feature[k])
-                weight_gan = self.calculate_adaptive_weight(lossl1 + losssam, loss_G, self.get_last_layer())
-                # weight_gan = 1.0
-                loss_G *= weight_gan
-                loss_G += lossl1 + losssam + perceptual_loss * self.lambdaperceptual * weight_gan / len(D_fake_feature)
+                loss_G = self.loss(self.D, x_fake, labels, images, 0, self.iteration, last_layer = self.get_last_layer())
+                # for p in self.D.parameters():
+                #     p.requires_grad = False
+                # pred_fake, D_fake_feature = self.D(fakeAB)
+                # loss_G = -pred_fake.mean(0).view(1)
+                # lossl1 = self.lossl1(x_fake, labels) * self.lambdal1
+                # losssam = SAM(x_fake, labels) * self.lambdasam
+                # perceptual_loss = 0
+                # for k in range(len(D_fake_feature)):
+                #     perceptual_loss += nn.MSELoss()(D_real_feature[k].detach(), D_fake_feature[k])
+                # weight_gan = self.calculate_adaptive_weight(lossl1 + losssam, loss_G, self.get_last_layer())
+                # loss_G *= weight_gan
+                # loss_G += lossl1 + losssam
+                # loss_G += lossl1 + losssam + perceptual_loss * self.lambdaperceptual * weight_gan / len(D_fake_feature)
                 # train the generator
                 loss_G.backward()
                 self.optimG.step()
+                
+                # train D
+                self.optimD.zero_grad()
+                # for p in self.D.parameters():
+                #     p.requires_grad = True
+                # D_real, D_real_feature = self.D(realAB)
+                # loss_real = -D_real.mean(0).view(1)
+                # D_fake, D_fake_feature = self.D(fakeAB.detach())
+                # loss_fake = D_fake.mean(0).view(1)
+                # perceptual_loss = 0
+                # for k in range(len(D_fake_feature)):
+                #     perceptual_loss -= nn.MSELoss()(D_real_feature[k], D_fake_feature[k])
+                # loss_d = loss_real + loss_fake + perceptual_loss * self.lambda_disc
+                loss_d = self.loss(self.D, x_fake, labels, images, 1, self.iteration, last_layer = self.get_last_layer())
+                loss_d.backward()
+                self.optimD.step()
                 
                 loss_mrae = criterion_mrae(x_fake, labels)
                 losses.update(loss_mrae.data)
                 self.iteration = self.iteration+1
                 if self.iteration % 20 == 0:
                     print('[epoch:%d/%d], lr=%.9f, train_losses.avg=%.9f, disc losses=%.9f, %.9f'
-                        % (self.epoch, self.end_epoch, lrG, losses.avg, loss_fake.mean(0).view(1), loss_real.mean(0).view(1)))
+                        % (self.epoch, self.end_epoch, lrG, losses.avg, loss_G, loss_d))
             # validation
             mrae_loss, rmse_loss, psnr_loss, sam_loss, sid_loss = self.validate(val_loader)
             print(f'MRAE:{mrae_loss}, RMSE: {rmse_loss}, PNSR:{psnr_loss}, SAM: {sam_loss}, SID: {sid_loss}')

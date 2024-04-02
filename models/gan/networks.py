@@ -195,7 +195,7 @@ class cgan_Discriminator(nn.Module):
         return output
     
 class SN_Discriminator(nn.Module):
-    def __init__(self, input_nums):
+    def __init__(self,  *, input_nums, **ignorekwargs):
         super(SN_Discriminator, self).__init__()
         self.conv1 = nn.Conv2d(input_nums, 64, kernel_size=(4, 4), stride=(2, 2), padding=(1, 1))
         self.conv2 = nn.Conv2d(64, 256, kernel_size=(4, 4), stride=(2, 2), padding=(1, 1))
@@ -476,7 +476,7 @@ class SNResnetDiscriminator(nn.Module):
 
 
 class SNResnetDiscriminator_perceptualLoss(nn.Module):
-    def __init__(self, input_nums, n_layer=3, n_block = 2):
+    def __init__(self, input_nums, n_layer=3, n_block = 2, *args, **kwargs):
         super().__init__()
         def ResBlock(input_nums, output_nums, n_blocks = 1):
             layer = []
@@ -510,7 +510,7 @@ class SNResnetDiscriminator_perceptualLoss(nn.Module):
         return output, features
 
 class SNTransformDiscriminator_perceptual(nn.Module):
-    def __init__(self, input_nums = 34, n_layer = 3):
+    def __init__(self, input_nums = 34, n_layer = 3, *args, **kwargs):
         super().__init__()
         def AttnBlock(dim, input_nums, output_nums, n_blocks = 1):
             layer = []

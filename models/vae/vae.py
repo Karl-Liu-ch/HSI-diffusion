@@ -421,9 +421,14 @@ class PerceptualVAE(l.LightningModule):
                                   list(self.quant_conv.parameters())+
                                   list(self.post_quant_conv.parameters()),
                                   lr=lr, betas=(0.5, 0.9))
+        sch_ae = torch.optim.lr_scheduler.CosineAnnealingLR(opt_ae, 1000, eta_min=1e-6)
         opt_disc = torch.optim.Adam(self.loss.discriminator.parameters(),
                                     lr=lr, betas=(0.5, 0.9))
-        return [opt_ae, opt_disc], []
+        sch_disc = torch.optim.lr_scheduler.CosineAnnealingLR(opt_disc, 1000, eta_min=1e-6)
+        # return [opt_ae, opt_disc], []
+        return({"optimizer": opt_ae, "lr_scheduler": sch_ae},
+                {"optimizer": opt_disc, "lr_scheduler": sch_disc},
+                )
 
     def get_last_layer(self):
         return self.decoder.conv_out.weight
@@ -450,6 +455,7 @@ class PerceptualVAE(l.LightningModule):
     
     def training_step(self, batch, batch_idx):
         opt_g, opt_disc = self.optimizers()
+        sch_g, sch_d = self.lr_schedulers()
         inputs = self.get_input(batch, self.image_key)
         reconstructions, posterior = self(inputs)
 
@@ -474,6 +480,10 @@ class PerceptualVAE(l.LightningModule):
         opt_disc.step()
         opt_disc.zero_grad()
         self.untoggle_optimizer(opt_disc)
+
+        if self.trainer.is_last_batch and (self.trainer.current_epoch + 1) % 1 == 0:
+            sch_g.step()
+            sch_d.step()
         
     def validation_step(self, batch, batch_idx):
         if batch_idx == 0:
