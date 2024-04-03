@@ -10,7 +10,7 @@ from models.vae.networks import Encoder
 from omegaconf import OmegaConf
 
 def load_hsi_perceptual_encoder():
-    ckpt_path = '/work3/s212645/Spectral_Reconstruction/checkpoint/vae_perceptual/lightning_logs/version_0/checkpoints/epoch83-mrae_avg0.05.ckpt'
+    ckpt_path = '/work3/s212645/Spectral_Reconstruction/checkpoint/vae_perceptual/lightning_logs/version_0/checkpoints/epoch108-mrae_avg0.04.ckpt'
     ckpt = torch.load(ckpt_path)
     encoder_weights = {k: v for k, v in ckpt["state_dict"].items() if k.startswith("encoder.")}
     keys = []
@@ -239,6 +239,15 @@ class LS_Loss(nn.Module):
         self.sam_loss = SamLoss()
         self.sam_weight = sam_weight
         self.criterion = nn.MSELoss()
+        self.perceptual_model = load_hsi_perceptual_encoder()
+
+    def cal_perceptual_loss(self, reconstructions, labels):
+        loss = 0
+        real_features = self.perceptual_model.get_features(labels)
+        fake_features = self.perceptual_model.get_features(reconstructions)
+        for real_feature, fake_feature in zip(real_features, fake_features):
+            loss += F.mse_loss(real_feature, fake_feature)
+        return loss
 
     def calculate_adaptive_weight(self, rec_loss, g_loss, last_layer=None):
         if last_layer is not None:
@@ -266,7 +275,8 @@ class LS_Loss(nn.Module):
             real_labels = torch.ones_like(disc_fake).cuda()
             disc_fake = self.criterion(disc_fake, real_labels)
             disc_fake = disc_fake * self.calculate_adaptive_weight(rec_loss, disc_fake, last_layer)
-            total_loss = - disc_fake + rec_loss
+            perceptual_loss = self.cal_perceptual_loss(reconstructions, labels)
+            total_loss = - disc_fake + rec_loss + perceptual_loss
             return total_loss
         
         if optimizer_idx == 1:

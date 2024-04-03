@@ -4,7 +4,7 @@ model:
   params:
     image_key: cond
     monitor: "val/mrae_avg"
-    embed_dim: 512
+    embed_dim: 64
     learning_rate: 4.0e-4
     lossconfig:
       target: models.vae.sndiscriminator.SpectralNormalizationWDiscriminator
@@ -23,8 +23,8 @@ model:
 
     ddconfig:
       double_z: True
-      z_channels: 256
-      resolution: 128
+      z_channels: 64
+      resolution: 256
       in_channels: 3
       out_ch: 3
       ch: 31
@@ -43,7 +43,7 @@ data:
       target: dataset.datasets.TrainDataset
       params:
         data_root: /work3/s212645/Spectral_Reconstruction/
-        crop_size: 128
+        crop_size: 256
         valid_ratio: 0.1
         test_ratio: 0.1
         aug: True
@@ -52,7 +52,7 @@ data:
       target: dataset.datasets.ValidDataset
       params:
         data_root: /work3/s212645/Spectral_Reconstruction/
-        crop_size: 128
+        crop_size: 256
         valid_ratio: 0.1
         test_ratio: 0.1
         aug: True

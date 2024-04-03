@@ -12,14 +12,14 @@ params:
       img_size: [128, 128]
 
   disconfig:
-    target: models.gan.networks.SNResnetDiscriminator_perceptualLoss
+    target: models.gan.networks.SNResnetDiscriminator
     params:
       input_nums: 37
       n_layer: 4
       n_block: 2
 
   lossconfig:
-    target: models.losses.gan_loss.Wasserstein_Loss_features
+    target: models.losses.gan_loss.Wasserstein_Loss
     params:
       l1_weight: 40.0
       sam_weight: 1.0

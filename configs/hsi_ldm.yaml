@@ -1,0 +1,185 @@
+model:
+  base_learning_rate: 5.0e-5   # set to target_lr by starting main.py with '--scale_lr False'
+  target: ldm.models.diffusion.ddpm.LatentDiffusion
+  params:
+    learning_rate: 4.0e-4
+    linear_start: 0.0015
+    linear_end: 0.0155
+    num_timesteps_cond: 1
+    log_every_t: 200
+    timesteps: 1000
+    loss_type: l1
+    first_stage_key: "label"
+    cond_stage_key: "cond"
+    image_size: 64
+    channels: 64
+    cond_stage_trainable: False
+    concat_mode: True
+    scale_by_std: True
+    monitor: 'val/loss_simple_ema'
+
+    scheduler_config: # 10000 warmup steps
+      target: ldm.lr_scheduler.LambdaLinearScheduler
+      params:
+        warm_up_steps: [10000]
+        cycle_lengths: [10000000000000]
+        f_start: [1.e-6]
+        f_max: [1.]
+        f_min: [ 1.]
+
+    unet_config:
+      target: ldm.modules.diffusionmodules.openaimodel.UNetModel
+      params:
+        image_size: 64
+        in_channels: 128
+        out_channels: 64
+        model_channels: 192
+        attention_resolutions: [ 8,4,2 ]   # 32, 16, 8, 4
+        num_res_blocks: 2
+        channel_mult: [ 1,2,4,4 ]  # 32, 16, 8, 4, 2
+        num_heads: 8
+        use_scale_shift_norm: True
+        resblock_updown: True
+
+    first_stage_config:
+      base_learning_rate: 4.5e-6
+      target: models.vae.vae.FirstStageAutoencoderKL
+      params:
+        image_key: label
+        cond_key: cond
+        monitor: "val/rec_loss"
+        embed_dim: 64
+        learning_rate: 4.0e-4
+        ckpt_path: /work3/s212645/Spectral_Reconstruction/checkpoint/LDM/ae/lightning_logs/version_0/checkpoints/last.ckpt
+        cond_ckpt_path: /work3/s212645/Spectral_Reconstruction/checkpoint/LDM/cond/lightning_logs/version_0/checkpoints/last.ckpt
+        lossconfig:
+          target: models.vae.sndiscriminator.SpectralNormalizationWDiscriminator
+          params:
+            disc_start: 0
+            kl_weight: 0.000001
+            pixelloss_weight: 10.0
+            disc_weight: 0.5
+            features_weight: 0.01
+            perceptual_weight: 0
+            disc_conditional: True
+            discconfig: 
+              target: models.gan.networks.SN_Discriminator_perceptualLoss
+              params:
+                input_nums: 34
+
+        condconfig: 
+          target: models.vae.vae.CondAutoencoderKL
+          params:
+            image_key: cond
+            monitor: "val/mrae_avg"
+            embed_dim: 64
+            learning_rate: 4.0e-4
+            ckpt_path: /work3/s212645/Spectral_Reconstruction/checkpoint/LDM/cond/lightning_logs/version_0/checkpoints/last.ckpt
+            lossconfig:
+              target: models.vae.sndiscriminator.SpectralNormalizationWDiscriminator
+              params:
+                disc_start: 0
+                kl_weight: 0.000001
+                disc_weight: 0.5
+                perceptual_weight: 1.0
+                disc_conditional: False
+                discconfig: 
+                  target: models.gan.networks.SN_Discriminator_perceptualLoss
+                  params:
+                    input_nums: 3
+
+            ddconfig:
+              double_z: True
+              z_channels: 64
+              resolution: 256
+              in_channels: 3
+              out_ch: 3
+              ch: 31
+              ch_mult: [ 1,2,4 ]  # num_down = len(ch_mult)-1
+              num_attn_blocks: 2
+              attn_resolutions: [ ]
+              dropout: 0.0
+
+        ddconfig:
+          double_z: True
+          z_channels: 64
+          resolution: 256
+          in_channels: 31
+          out_ch: 31
+          ch: 31
+          ch_mult: [ 1,2,4 ]  # num_down = len(ch_mult)-1
+          num_attn_blocks: 2
+          attn_resolutions: [ ]
+          dropout: 0.0
+
+    cond_stage_config:
+      target: models.vae.vae.CondAutoencoderKL
+      params:
+        image_key: cond
+        monitor: "val/mrae_avg"
+        embed_dim: 64
+        learning_rate: 4.0e-4
+        lossconfig:
+          target: models.vae.sndiscriminator.SpectralNormalizationWDiscriminator
+          params:
+            disc_start: 0
+            kl_weight: 0.000001
+            pixelloss_weight: 10.0
+            disc_weight: 0.5
+            features_weight: 0.01
+            perceptual_weight: 1.0
+            disc_conditional: False
+            discconfig: 
+              target: models.gan.networks.SN_Discriminator_perceptualLoss
+              params:
+                input_nums: 3
+
+        ddconfig:
+          double_z: True
+          z_channels: 64
+          resolution: 256
+          in_channels: 3
+          out_ch: 3
+          ch: 31
+          ch_mult: [ 1,2,4 ]  # num_down = len(ch_mult)-1
+          num_attn_blocks: 2
+          attn_resolutions: [ ]
+          dropout: 0.0
+
+
+data:
+  target: dataset.base.DataModuleFromConfig
+  params:
+    batch_size: 1
+    num_workers: 32
+    train:
+      target: dataset.datasets.TrainDataset
+      params:
+        data_root: /work3/s212645/Spectral_Reconstruction/
+        crop_size: 256
+        valid_ratio: 0.1
+        test_ratio: 0.1
+        aug: True
+        datanames: ['ARAD/']
+    validation:
+      target: dataset.datasets.ValidDataset
+      params:
+        data_root: /work3/s212645/Spectral_Reconstruction/
+        crop_size: 256
+        valid_ratio: 0.1
+        test_ratio: 0.1
+        aug: True
+        datanames: ['ARAD/']
+
+lightning:
+  callbacks:
+    image_logger:
+      target: main.ImageLogger
+      params:
+        batch_frequency: 5000
+        max_images: 8
+        increase_log_steps: False
+
+
+  trainer:
+    benchmark: True

@@ -6,13 +6,15 @@ model:
     image_key: label
     cond_key: cond
     monitor: "val/rec_loss"
-    embed_dim: 512
+    embed_dim: 64
     learning_rate: 4.0e-4
+    ckpt_path: /work3/s212645/Spectral_Reconstruction/checkpoint/LDM/ae/lightning_logs/version_0/checkpoints/last.ckpt
+    cond_ckpt_path: /work3/s212645/Spectral_Reconstruction/checkpoint/LDM/cond/lightning_logs/version_0/checkpoints/last.ckpt
     lossconfig:
       target: models.vae.sndiscriminator.SpectralNormalizationWDiscriminator
       params:
         disc_start: 0
-        kl_weight: 10.0
+        kl_weight: 0.000001
         pixelloss_weight: 10.0
         disc_weight: 0.5
         features_weight: 0.01
@@ -28,9 +30,9 @@ model:
       params:
         image_key: cond
         monitor: "val/mrae_avg"
-        embed_dim: 512
+        embed_dim: 64
         learning_rate: 4.0e-4
-        ckpt_path: /work3/s212645/Spectral_Reconstruction/checkpoint/vae/lightning_logs/version_0/checkpoints/epoch154-mrae_avg0.10.ckpt
+        ckpt_path: /work3/s212645/Spectral_Reconstruction/checkpoint/LDM/cond/lightning_logs/version_0/checkpoints/last.ckpt
         lossconfig:
           target: models.vae.sndiscriminator.SpectralNormalizationWDiscriminator
           params:
@@ -46,8 +48,8 @@ model:
 
         ddconfig:
           double_z: True
-          z_channels: 256
-          resolution: 128
+          z_channels: 64
+          resolution: 256
           in_channels: 3
           out_ch: 3
           ch: 31
@@ -58,8 +60,8 @@ model:
 
     ddconfig:
       double_z: True
-      z_channels: 256
-      resolution: 128
+      z_channels: 64
+      resolution: 256
       in_channels: 31
       out_ch: 31
       ch: 31
@@ -72,13 +74,13 @@ model:
 data:
   target: dataset.base.DataModuleFromConfig
   params:
-    batch_size: 4
+    batch_size: 1
     num_workers: 32
     train:
       target: dataset.datasets.TrainDataset
       params:
         data_root: /work3/s212645/Spectral_Reconstruction/
-        crop_size: 128
+        crop_size: 256
         valid_ratio: 0.1
         test_ratio: 0.1
         aug: True
@@ -87,7 +89,7 @@ data:
       target: dataset.datasets.ValidDataset
       params:
         data_root: /work3/s212645/Spectral_Reconstruction/
-        crop_size: 128
+        crop_size: 256
         valid_ratio: 0.1
         test_ratio: 0.1
         aug: True

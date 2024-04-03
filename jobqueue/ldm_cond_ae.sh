@@ -2,9 +2,9 @@
 ### General options
 ### –- specify queue --
 #BSUB -q gpua100
-#BSUB -R "select[gpu80gb]"
+###BSUB -R "select[gpu80gb]"
 ### -- set the job Name --
-#BSUB -J training_vqgan_transformer
+#BSUB -J training_vqgan
 ### -- ask for number of cores (default: 1) --
 #BSUB -n 8
 ### -- specify that the cores must be on the same host --
@@ -25,8 +25,8 @@
 #BSUB -B
 ### -- Specify the output and error file. %J is the job-id --
 ### -- -o and -e mean append, -oo and -eo mean overwrite --
-#BSUB -o training_vqgan_transformer%J.out
-#BSUB -e training_vqgan_transformer%J.err
+#BSUB -o training_vqgan%J.out
+#BSUB -e training_vqgan%J.err
 # -- end of LSF options --
 nvidia-smi
 module load cuda/11.8
@@ -36,4 +36,4 @@ source ./miniconda3/bin/activate
 conda activate pytorch
 cd /zhome/02/b/164706/Master_Courses/thesis/HSI-diffusion/
 export PYTHONUNBUFFERED=1
-python -u VQGAN_pytorch/training_transformer.py --batch-size 64
+python -u main.py -c configs/hsi_autoencoder_kl_cond.yaml -l /work3/s212645/Spectral_Reconstruction/checkpoint/LDM/cond/

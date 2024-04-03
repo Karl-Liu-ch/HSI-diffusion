@@ -71,6 +71,7 @@ if __name__ == '__main__':
 
     checkpoint_callback = ModelCheckpoint(
         monitor='val/mrae_avg',
+        # monitor='val/loss_ema',
         save_top_k=3,
         mode='min',
         save_last=True,

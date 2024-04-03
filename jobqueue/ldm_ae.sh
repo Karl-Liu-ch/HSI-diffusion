@@ -36,4 +36,4 @@ source ./miniconda3/bin/activate
 conda activate pytorch
 cd /zhome/02/b/164706/Master_Courses/thesis/HSI-diffusion/
 export PYTHONUNBUFFERED=1
-python -u vqgan_pytorch/training_vqgan.py --batch-size 32
+python -u main.py -c configs/hsi_autoencoder_kl.yaml -l /work3/s212645/Spectral_Reconstruction/checkpoint/LDM/ae/

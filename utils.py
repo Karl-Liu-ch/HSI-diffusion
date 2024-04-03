@@ -16,8 +16,28 @@ import scipy.io
 import cv2
 from einops import repeat
 import importlib
+from omegaconf import OmegaConf
 rgbfilterpath = 'resources/RGB_Camera_QE.csv'
 camera_filter, filterbands = load_rgb_filter(rgbfilterpath)
+
+def load_lightning2torch(ckpt_path, model, name = 'encoder'):
+    name += '.'
+    ckpt = torch.load(ckpt_path)
+    encoder_weights = {k: v for k, v in ckpt["state_dict"].items() if k.startswith(name)}
+    keys = []
+    newkeys = []
+    for key in encoder_weights.keys():
+        keys.append(key)
+        newkey = key[len(name):]
+        newkeys.append(newkey)
+    for key, newkey in zip(keys, newkeys):
+        encoder_weights[newkey] = encoder_weights.pop(key)
+    model = model.cuda()
+    model.load_state_dict(encoder_weights)
+    model.eval()
+    for param in model.parameters():
+        param.requires_grad = False
+    return model
 
 def instantiate_from_config(config):
     if not "target" in config:

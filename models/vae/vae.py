@@ -64,8 +64,6 @@ class AutoencoderKL(l.LightningModule):
             self.register_buffer("colorize", torch.randn(3, colorize_nlabels, 1, 1))
         if monitor is not None:
             self.monitor = monitor
-        if ckpt_path is not None:
-            self.init_from_ckpt(ckpt_path, ignore_keys=ignore_keys)
 
     def init_from_ckpt(self, path, ignore_keys=list()):
         sd = torch.load(path, map_location="cpu")["state_dict"]
@@ -177,6 +175,8 @@ class CondAutoencoderKL(AutoencoderKL):
         super().__init__(ddconfig, lossconfig, embed_dim, ckpt_path, ignore_keys, image_key, colorize_nlabels, monitor, learning_rate)
         self.encoder = CondEncoder(**ddconfig)
         self.automatic_optimization = False
+        if ckpt_path is not None:
+            self.init_from_ckpt(ckpt_path, ignore_keys=ignore_keys)
 
     def encode(self, x):
         h, condfeatures = self.encoder(x)
@@ -255,15 +255,17 @@ def disabled_train(self, mode=True):
     return self
 
 class FirstStageAutoencoderKL(AutoencoderKL):
-    def __init__(self, ddconfig, condconfig, lossconfig, embed_dim, learning_rate, ckpt_path=None, ignore_keys=[], image_key="image", cond_key='cond', colorize_nlabels=None, monitor=None):
+    def __init__(self, ddconfig, condconfig, lossconfig, embed_dim, learning_rate, cond_ckpt_path, ckpt_path=None, ignore_keys=[], image_key="image", cond_key='cond', colorize_nlabels=None, monitor=None):
         super().__init__(ddconfig, lossconfig, embed_dim, ckpt_path, ignore_keys, image_key, colorize_nlabels, monitor, learning_rate)
         self.decoder = FirstStageDecoder(**ddconfig)
         self.cond_key = cond_key
-        self.cond_model = instantiate_from_config(condconfig)
-        self.cond_model = self.cond_model.eval()
-        self.cond_model.train = disabled_train
+        self.cond_encoder = load_lightning2torch(cond_ckpt_path, CondEncoder(**condconfig.params.ddconfig), name='encoder')
+        self.cond_quant_conv = load_lightning2torch(cond_ckpt_path, torch.nn.Conv2d(2*ddconfig["z_channels"], 2*embed_dim, 1), name='quant_conv')
+
         self.automatic_optimization = False
         self.post_quant_conv = torch.nn.Conv2d(embed_dim*2, ddconfig["z_channels"]*2, 1)
+        if ckpt_path is not None:
+            self.init_from_ckpt(ckpt_path, ignore_keys=ignore_keys)
 
     def decode(self, z, condfeatures, h):
         z = self.post_quant_conv(torch.concat([z, h.mode()], dim=1))
@@ -271,13 +273,21 @@ class FirstStageAutoencoderKL(AutoencoderKL):
         dec = self.decoder(z, condfeatures)
         return dec
 
+    def cond_encode(self, x):
+        h, condfeatures = self.cond_encoder(x)
+        moments = self.cond_quant_conv(h)
+        posterior = DiagonalGaussianDistribution(moments)
+        return posterior, condfeatures
+
+
     def forward(self, input, cond, sample_posterior=True):
         posterior = self.encode(input)
         if sample_posterior:
             z = posterior.sample()
         else:
             z = posterior.mode()
-        h, condfeatures = self.cond_model.encode(cond)
+        # h, condfeatures = self.cond_model.encode(cond)
+        h, condfeatures = self.cond_encode(cond)
         dec = self.decode(z, condfeatures, h)
         return dec, posterior
     
@@ -320,7 +330,7 @@ class FirstStageAutoencoderKL(AutoencoderKL):
         cond = batch[self.cond_key]
         cond = Variable(cond)
         output, posterior = self(labels, cond)
-        output = self.sample(batch)
+        # output = self.sample(batch)
         loss_mrae = criterion_mrae(output, labels).detach()
         loss_rmse = criterion_rmse(output, labels).detach()
         loss_psnr = criterion_psnr(output, labels).detach()
@@ -341,7 +351,7 @@ class FirstStageAutoencoderKL(AutoencoderKL):
     def sample(self, batch):
         cond = batch[self.cond_key]
         cond = Variable(cond)
-        h, condfeatures = self.cond_model.encode(cond)
+        h, condfeatures = self.cond_encode(cond)
         z = torch.randn_like(h.mode()).to(device)
         # h = self.cond_model.post_quant_conv(h.mode())
         z = self.post_quant_conv(torch.concat([z, h.mode()], dim=1))
