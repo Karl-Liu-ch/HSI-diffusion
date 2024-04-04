@@ -110,7 +110,7 @@ class Gan():
         print("Validation set samples: ", len(self.val_data))
         
     def get_last_layer(self):
-        return self.G.conv_out.convout.weight_orig
+        return self.G.get_last_layer()
 
     def calculate_adaptive_weight(self, rec_loss, g_loss, last_layer=None):
         if last_layer is not None:

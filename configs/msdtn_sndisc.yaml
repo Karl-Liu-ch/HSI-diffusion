@@ -3,7 +3,8 @@ params:
   valid_ratio: 0.1
   test_ratio: 0.1
   genconfig:
-    target: models.transformer.SN_DTN
+    # target: models.transformer.SN_DTN
+    target: models.transformer.DTN_multi_stage
     params:
       in_channels: 6
       out_channels: 31

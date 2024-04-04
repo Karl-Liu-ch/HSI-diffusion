@@ -88,5 +88,6 @@ if __name__ == '__main__':
                     default_root_dir=logdir, 
                     callbacks=[checkpoint_callback], 
                     logger=tblogger)
+    cfg.data.params.batch_size = opt.batch_size
     data = instantiate_from_config(cfg.data)
     trainer.fit(model, data, ckpt_path=ckpt_path)

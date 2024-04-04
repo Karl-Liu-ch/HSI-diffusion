@@ -200,7 +200,8 @@ class SN_Discriminator(nn.Module):
         self.conv1 = nn.Conv2d(input_nums, 64, kernel_size=(4, 4), stride=(2, 2), padding=(1, 1))
         self.conv2 = nn.Conv2d(64, 256, kernel_size=(4, 4), stride=(2, 2), padding=(1, 1))
         self.conv3 = nn.Conv2d(256, 512, kernel_size=(4, 4), stride=(2, 2), padding=(1, 1))
-        self.conv4 = nn.Conv2d(512, 1, kernel_size=(4, 4), stride=(1,1), padding=0)
+        self.conv4 = nn.Conv2d(512, 1024, kernel_size=(4, 4), stride=(1,1), padding=0)
+        self.fc = SNLinear(1024, 1, bias=False)
         
         nn.init.xavier_uniform_(self.conv1.weight.data, 1.)
         nn.init.xavier_uniform_(self.conv2.weight.data, 1.)
@@ -220,13 +221,14 @@ class SN_Discriminator(nn.Module):
         self.out = nn.Sequential(
             nn.AdaptiveAvgPool2d((1, 1)), 
             nn.Flatten(), 
+            self.fc
             # nn.Sigmoid()
         )
 
     def forward(self, input):
         output = self.Net(input)
         output = self.out(output)
-        return output
+        return output.mean()
     
 class SN_Discriminator_perceptualLoss(nn.Module):
     def __init__(self, *, input_nums, **ignorekwargs):
@@ -234,7 +236,8 @@ class SN_Discriminator_perceptualLoss(nn.Module):
         self.conv1 = nn.Conv2d(input_nums, 64, kernel_size=(4, 4), stride=(2, 2), padding=(1, 1))
         self.conv2 = nn.Conv2d(64, 256, kernel_size=(4, 4), stride=(2, 2), padding=(1, 1))
         self.conv3 = nn.Conv2d(256, 512, kernel_size=(4, 4), stride=(2, 2), padding=(1, 1))
-        self.conv4 = nn.Conv2d(512, 1, kernel_size=(4, 4), stride=(1,1), padding=0)
+        self.conv4 = nn.Conv2d(512, 512, kernel_size=(4, 4), stride=(1,1), padding=0)
+        self.fc = SNLinear(512, 1, bias=False)
         
         nn.init.xavier_uniform_(self.conv1.weight.data, 1.)
         nn.init.xavier_uniform_(self.conv2.weight.data, 1.)
@@ -259,6 +262,7 @@ class SN_Discriminator_perceptualLoss(nn.Module):
         self.out = nn.Sequential(
             nn.AdaptiveAvgPool2d((1, 1)), 
             nn.Flatten(), 
+            self.fc
             # nn.Sigmoid()
         )
 

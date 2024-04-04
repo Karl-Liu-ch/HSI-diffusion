@@ -180,25 +180,27 @@ class Encoder(nn.Module):
 
         # downsampling
         hs = [self.conv_in(x)]
+        features = []
         for i_level in range(self.num_resolutions):
             h = self.down[i_level].block(hs[-1], temb)
             hs.append(h)
             h = self.down[i_level].attn(hs[-1])
             hs.append(h)
+            features.append(h)
             if i_level != self.num_resolutions-1:
                 hs.append(self.down[i_level].downsample(hs[-1]))
 
         # middle
         h = hs[-1]
         h = self.mid.attn_1(h)
-        hs.append(h)
+        # hs.append(h)
 
         # end
         h = self.norm_out(h)
-        hs.append(h)
+        # hs.append(h)
         # h = nonlinearity(h)
         # h = self.conv_out(h)
-        return hs
+        return features
 
 class CondEncoder(Encoder):
     def forward(self, x):

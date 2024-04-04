@@ -10,7 +10,7 @@ from models.vae.networks import Encoder
 from omegaconf import OmegaConf
 
 def load_hsi_perceptual_encoder():
-    ckpt_path = '/work3/s212645/Spectral_Reconstruction/checkpoint/vae_perceptual/lightning_logs/version_0/checkpoints/epoch108-mrae_avg0.04.ckpt'
+    ckpt_path = '/work3/s212645/Spectral_Reconstruction/checkpoint/vae_perceptual/lightning_logs/version_0/checkpoints/epoch147-mrae_avg0.03.ckpt'
     ckpt = torch.load(ckpt_path)
     encoder_weights = {k: v for k, v in ckpt["state_dict"].items() if k.startswith("encoder.")}
     keys = []
@@ -107,7 +107,7 @@ class Wgan_Loss(nn.Module):
             return total_loss, log
         
 class Wasserstein_Loss_features(nn.Module):
-    def __init__(self, *, l1_weight, sam_weight, features_weight, disc_weight, threshold = 0, **kwargs) -> None:
+    def __init__(self, *, l1_weight, sam_weight, features_weight, disc_weight, perceptual_weight =0.01, threshold = 0, **kwargs) -> None:
         super().__init__()
         self.l1_loss = nn.L1Loss()
         self.l1_weight = l1_weight
@@ -116,6 +116,7 @@ class Wasserstein_Loss_features(nn.Module):
         self.features_weight = features_weight
         self.disc_weight = disc_weight
         self.threshold = threshold
+        self.perceptual_weight = perceptual_weight
         self.perceptual_model = load_hsi_perceptual_encoder()
 
     def cal_perceptual_loss(self, reconstructions, labels):
@@ -160,7 +161,7 @@ class Wasserstein_Loss_features(nn.Module):
             feature_loss = 0
             for k in range(len(fake_features)):
                 feature_loss += F.mse_loss(real_features[k].detach(), fake_features[k])
-            perceptual_loss = self.cal_perceptual_loss(reconstructions, labels)
+            perceptual_loss = self.cal_perceptual_loss(reconstructions, labels) * self.perceptual_weight
             total_loss = - disc_fake + rec_loss + feature_loss * self.features_weight * disc_factor + perceptual_loss
             return total_loss
         
@@ -177,12 +178,14 @@ class Wasserstein_Loss_features(nn.Module):
             return total_loss * disc_factor
         
 class Wasserstein_Loss(nn.Module):
-    def __init__(self, *, l1_weight, sam_weight, **kwargs) -> None:
+    def __init__(self, *, l1_weight, sam_weight, perceptual_weight =0.01, threshold = 0, **kwargs) -> None:
         super().__init__()
         self.l1_loss = nn.L1Loss()
         self.l1_weight = l1_weight
         self.sam_loss = SamLoss()
         self.sam_weight = sam_weight
+        self.threshold = threshold
+        self.perceptual_weight = perceptual_weight
         self.perceptual_model = load_hsi_perceptual_encoder()
 
     def cal_perceptual_loss(self, reconstructions, labels):
@@ -206,19 +209,24 @@ class Wasserstein_Loss(nn.Module):
         # d_weight = d_weight * self.discriminator_weight
         return d_weight
     
-    def forward(self, discriminator, reconstructions, labels, cond, optimizer_idx, last_layer = None):
+    def forward(self, discriminator, reconstructions, labels, cond, optimizer_idx, global_step, last_layer = None):
         l1_loss = self.l1_loss(reconstructions, labels)
         sam_loss = self.sam_loss(reconstructions, labels)
         rec_loss = l1_loss * self.l1_weight + sam_loss * self.sam_weight
+        if global_step > self.threshold:
+            disc_factor = 1.0
+        else:
+            disc_factor = 0.0
+
 
         if optimizer_idx == 0:
             # train generator
             for params in discriminator.parameters():
                 params.requires_grad = False
             disc_fake = discriminator(torch.concat([reconstructions, cond], dim=1))
-            disc_fake = disc_fake.mean(0).view(1)
-            disc_fake = disc_fake * self.calculate_adaptive_weight(rec_loss, disc_fake, last_layer)
-            perceptual_loss = self.cal_perceptual_loss(reconstructions, labels)
+            disc_fake = disc_fake.mean()
+            disc_fake = disc_fake * self.calculate_adaptive_weight(rec_loss, disc_fake, last_layer) * disc_factor
+            perceptual_loss = self.cal_perceptual_loss(reconstructions, labels) * self.perceptual_weight
             total_loss = - disc_fake + rec_loss + perceptual_loss
             return total_loss
         
@@ -228,17 +236,20 @@ class Wasserstein_Loss(nn.Module):
                 params.requires_grad = True
             disc_fake = discriminator(torch.concat([reconstructions, cond], dim=1).detach())
             disc_real = discriminator(torch.concat([labels, cond], dim=1).detach())
-            total_loss = disc_fake.mean(0).view(1) - disc_real.mean(0).view(1)
-            return total_loss
+            total_loss = disc_fake.mean() - disc_real.mean()
+            # print(disc_fake.mean(), disc_real.mean())
+            return total_loss * disc_factor
         
 class LS_Loss(nn.Module):
-    def __init__(self, *, l1_weight, sam_weight, **kwargs) -> None:
+    def __init__(self, *, l1_weight, sam_weight, perceptual_weight =0.01, threshold = 0, **kwargs) -> None:
         super().__init__()
         self.l1_loss = nn.L1Loss()
         self.l1_weight = l1_weight
         self.sam_loss = SamLoss()
         self.sam_weight = sam_weight
         self.criterion = nn.MSELoss()
+        self.threshold = threshold
+        self.perceptual_weight = perceptual_weight
         self.perceptual_model = load_hsi_perceptual_encoder()
 
     def cal_perceptual_loss(self, reconstructions, labels):
@@ -262,10 +273,14 @@ class LS_Loss(nn.Module):
         # d_weight = d_weight * self.discriminator_weight
         return d_weight
     
-    def forward(self, discriminator, reconstructions, labels, cond, optimizer_idx, last_layer = None):
+    def forward(self, discriminator, reconstructions, labels, cond, optimizer_idx, global_step, last_layer = None):
         l1_loss = self.l1_loss(reconstructions, labels)
         sam_loss = self.sam_loss(reconstructions, labels)
         rec_loss = l1_loss * self.l1_weight + sam_loss * self.sam_weight
+        if global_step > self.threshold:
+            disc_factor = 1.0
+        else:
+            disc_factor = 0.0
 
         if optimizer_idx == 0:
             # train generator
@@ -274,8 +289,8 @@ class LS_Loss(nn.Module):
             disc_fake = discriminator(torch.concat([reconstructions, cond], dim=1))
             real_labels = torch.ones_like(disc_fake).cuda()
             disc_fake = self.criterion(disc_fake, real_labels)
-            disc_fake = disc_fake * self.calculate_adaptive_weight(rec_loss, disc_fake, last_layer)
-            perceptual_loss = self.cal_perceptual_loss(reconstructions, labels)
+            disc_fake = disc_fake * self.calculate_adaptive_weight(rec_loss, disc_fake, last_layer) * disc_factor
+            perceptual_loss = self.cal_perceptual_loss(reconstructions, labels) * self.perceptual_weight
             total_loss = - disc_fake + rec_loss + perceptual_loss
             return total_loss
         
@@ -290,4 +305,4 @@ class LS_Loss(nn.Module):
             disc_fake = self.criterion(disc_fake, fake_labels)
             disc_real = self.criterion(disc_real, real_labels)
             total_loss = disc_fake.mean(0).view(1) - disc_real.mean(0).view(1)
-            return total_loss
+            return total_loss * disc_factor

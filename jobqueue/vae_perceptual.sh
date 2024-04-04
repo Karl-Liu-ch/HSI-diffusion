@@ -36,4 +36,4 @@ source ./miniconda3/bin/activate
 conda activate pytorch
 cd /zhome/02/b/164706/Master_Courses/thesis/HSI-diffusion/
 export PYTHONUNBUFFERED=1
-python -u main.py -c configs/hsi_vae_perceptual.yaml -l /work3/s212645/Spectral_Reconstruction/checkpoint/vae_perceptual/
+python -u main.py -c configs/hsi_vae_perceptual.yaml -l /work3/s212645/Spectral_Reconstruction/checkpoint/vae_perceptual/ -r /work3/s212645/Spectral_Reconstruction/checkpoint/vae_perceptual/lightning_logs/version_0/checkpoints/last.ckpt

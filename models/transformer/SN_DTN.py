@@ -389,6 +389,9 @@ class DTN(nn.Module):
         # out = self.mapping(fea) + fea
 
         return out
+    
+    def get_last_layer(self):
+        return self.mapping.convout.weight_orig
 
 class SN_DTN(nn.Module):
     def __init__(self, in_channels=3, out_channels=31, n_feat=31, stage=3, img_size=[128, 128], window = 32):
@@ -423,6 +426,9 @@ class SN_DTN(nn.Module):
         h = self.conv_out(torch.concat([h, x], dim=1))
         # h += x
         return h[:, :, :h_inp, :w_inp]
+    
+    def get_last_layer(self):
+        return self.conv_out.convout.weight_orig
 
 class TrainDTN(BaseModel):
     def __init__(self, opt, model, model_name, multiGPU=False) -> None:
