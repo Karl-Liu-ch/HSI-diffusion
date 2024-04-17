@@ -268,8 +268,9 @@ class FirstStageAutoencoderKL(AutoencoderKL):
             self.init_from_ckpt(ckpt_path, ignore_keys=ignore_keys)
 
     def decode(self, z, condfeatures, h):
-        z = self.post_quant_conv(torch.concat([z, h.mode()], dim=1))
-        # h = self.cond_model.post_quant_conv(h.mode())
+        if isinstance(h, DiagonalGaussianDistribution):
+            h = h.mode()
+        z = self.post_quant_conv(torch.concat([z, h], dim=1))
         dec = self.decoder(z, condfeatures)
         return dec
 
@@ -374,8 +375,10 @@ class PerceptualVAE(l.LightningModule):
         self.automatic_optimization = False
         self.image_key = image_key
         self.learning_rate = learning_rate
-        self.encoder = Encoder(**ddconfig)
-        self.decoder = Decoder(**ddconfig)
+        # self.encoder = Encoder(**ddconfig)
+        # self.decoder = Decoder(**ddconfig)
+        self.encoder = DualTransformerEncoder(**ddconfig)
+        self.decoder = DualTransformerDecoder(**ddconfig)
         self.loss = instantiate_from_config(lossconfig)
         assert ddconfig["double_z"]
         self.quant_conv = torch.nn.Conv2d(2*ddconfig["z_channels"], 2*embed_dim, 1)

@@ -1,11 +1,10 @@
 target: models.gan.gan.Gan
 params:
-  ckpath: /work3/s212645/Spectral_Reconstruction/checkpoint/gan/DTN_multi_stage-SN_Discriminator/
+  ckpath: /work3/s212645/Spectral_Reconstruction/checkpoint/gan/Multi_Stage_SN_DTN-SN_Discriminator/
   valid_ratio: 0.1
-  test_ratio: 0.1
+  test_ratio: 0.8
   genconfig:
-    # target: models.transformer.SN_DTN
-    target: models.transformer.DTN_multi_stage
+    target: models.transformer.Multi_Stage_SN_DTN
     params:
       in_channels: 6
       out_channels: 31
@@ -26,7 +25,8 @@ params:
       l1_weight: 40.0
       sam_weight: 1.0
       features_weight: 0.0
+      deltaE_weight: 1.0
       disc_weight: 0.0
-      perceptual_weight: 1.0
+      perceptual_weight: 0.0
       threshold: 0
   

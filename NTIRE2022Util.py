@@ -156,32 +156,32 @@ def projectHS(cube, cube_bands, qes, qe_bands, clipNegative, interp_mode='linear
     :return:
     :return: numpy array of projected data, shape [..., num_channels ]
     """
-    if not np.all(qe_bands == cube_bands):  # then sample the qes on the data bands
-        dx_qes = qe_bands[1] - qe_bands[0]
-        dx_hs = cube_bands[1] - cube_bands[0]
-        if np.any(np.diff(qe_bands) != dx_qes) or np.any(np.diff(cube_bands) != dx_hs):
-            raise ValueError(f'V81Filter.projectHS - can only interpolate from uniformly sampled bands\n'
-                             f'got hs bands: {cube_bands}\n'
-                             f'filter bands: {qe_bands}')
+    # if not np.all(qe_bands == cube_bands):  # then sample the qes on the data bands
+    dx_qes = qe_bands[1] - qe_bands[0]
+    dx_hs = cube_bands[1] - cube_bands[0]
+    if np.any(np.diff(qe_bands) != dx_qes) or np.any(np.diff(cube_bands) != dx_hs):
+        raise ValueError(f'V81Filter.projectHS - can only interpolate from uniformly sampled bands\n'
+                            f'got hs bands: {cube_bands}\n'
+                            f'filter bands: {qe_bands}')
 
-        if dx_qes < 0:
-            # we assume the qe_bands are sorted ascending inside resampleHSPicked, reverse them
-            qes = qes[::-1]
-            qe_bands = qe_bands[::-1]
+    if dx_qes < 0:
+        # we assume the qe_bands are sorted ascending inside resampleHSPicked, reverse them
+        qes = qes[::-1]
+        qe_bands = qe_bands[::-1]
 
-        # find the limits of the interpolation, WE DON'T WANT TO EXTRAPOLATE!
-        # the limits must be defined by the data bands so the interpolated qe matches
-        min_band = cube_bands[
-            np.argwhere(cube_bands >= qe_bands.min()).min()]  # the first data band which has a respective qe value
-        max_band = cube_bands[
-            np.argwhere(cube_bands <= qe_bands.max()).max()]  # the last data band which has a respective qe value
-        # TODO is there a minimal overlap we want to enforce?
+    # find the limits of the interpolation, WE DON'T WANT TO EXTRAPOLATE!
+    # the limits must be defined by the data bands so the interpolated qe matches
+    min_band = cube_bands[
+        np.argwhere(cube_bands >= qe_bands.min()).min()]  # the first data band which has a respective qe value
+    max_band = cube_bands[
+        np.argwhere(cube_bands <= qe_bands.max()).max()]  # the last data band which has a respective qe value
+    # TODO is there a minimal overlap we want to enforce?
 
-        cube = cube[..., np.logical_and(cube_bands >= min_band, cube_bands <= max_band)]
-        shared_bands = make_spectral_bands(min_band, max_band,
-                                           dx_hs)  # shared domain with the spectral resolution of the spectral data
-        qes = resampleHSPicked(qes.T, bands=qe_bands, newBands=shared_bands, interpMode=interp_mode,
-                               fill_value=np.nan).T
+    cube = cube[..., np.logical_and(cube_bands >= min_band, cube_bands <= max_band)]
+    shared_bands = make_spectral_bands(min_band, max_band,
+                                        dx_hs)  # shared domain with the spectral resolution of the spectral data
+    qes = resampleHSPicked(qes.T, bands=qe_bands, newBands=shared_bands, interpMode=interp_mode,
+                            fill_value=np.nan).T
 
     return projectCube(cube, qes, clipNegative=clipNegative)
 

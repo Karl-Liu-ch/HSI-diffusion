@@ -25,7 +25,16 @@ from models.vae.networks import DiagonalGaussianDistribution
 from ldm.models.autoencoder import VQModelInterface, IdentityFirstStage, AutoencoderKL
 from ldm.modules.diffusionmodules.util import make_beta_schedule, extract_into_tensor, noise_like
 from ldm.models.diffusion.ddim import DDIMSampler
+from utils import *
 
+criterion_mrae = Loss_MRAE()
+criterion_rmse = Loss_RMSE()
+criterion_psnr = Loss_PSNR()
+criterion_psnrrgb = Loss_PSNR()
+criterion_sam = Loss_SAM()
+criterion_sid = Loss_SID()
+criterion_fid = Loss_Fid().cuda()
+criterion_ssim = Loss_SSIM().cuda()
 
 __conditioning_keys__ = {'concat': 'c_concat',
                          'crossattn': 'c_crossattn',
@@ -363,7 +372,32 @@ class DDPM(pl.LightningModule):
             loss_dict_ema = {key + '_ema': loss_dict_ema[key] for key in loss_dict_ema}
         self.log_dict(loss_dict_no_ema, prog_bar=False, logger=True, on_step=False, on_epoch=True)
         self.log_dict(loss_dict_ema, prog_bar=False, logger=True, on_step=False, on_epoch=True)
+        log = self.log_images(batch, N = batch['label'].shape[0])
+        xrec = log['samples']
+        if batch_idx == 0:
+            self.losses_mrae = AverageMeter()
+            self.losses_rmse = AverageMeter()
+            self.losses_psnr = AverageMeter()
+            self.losses_sam = AverageMeter()
+        loss_mrae = criterion_mrae(xrec, batch[self.first_stage_key]).detach()
+        loss_rmse = criterion_rmse(xrec, batch[self.first_stage_key]).detach()
+        loss_psnr = criterion_psnr(xrec, batch[self.first_stage_key]).detach()
+        loss_sam = criterion_sam(xrec, batch[self.first_stage_key]).detach()
+        criterion_sam.reset()
+        criterion_psnr.reset()
+        self.log_dict({'mrae': loss_mrae, 'rmse': loss_rmse, 'psnr': loss_psnr, 'sam': loss_sam})
+        self.losses_mrae.update(loss_mrae.data)
+        self.losses_rmse.update(loss_rmse.data)
+        self.losses_psnr.update(loss_psnr.data)
+        self.losses_sam.update(loss_sam.data)
+        tensorboard = self.logger.experiment
+        tensorboard.add_image('fake', reconRGB(xrec)[0,:,:,:])
+        tensorboard.add_image('gt', reconRGB(batch[self.first_stage_key])[0,:,:,:])
 
+    def on_validation_epoch_end(self):
+        print(f'validation: MRAE: {self.losses_mrae.avg}, RMSE: {self.losses_rmse.avg}, PSNR: {self.losses_psnr.avg}, SAM: {self.losses_sam.avg}.')
+        self.log_dict({'val/mrae_avg': self.losses_mrae.avg, 'val/rmse_avg': self.losses_rmse.avg, 'val/psnr_avg': self.losses_psnr.avg, 'val/sam_avg': self.losses_sam.avg})
+    
     def on_train_batch_end(self, *args, **kwargs):
         if self.use_ema:
             self.model_ema(self.model)
@@ -531,7 +565,7 @@ class LatentDiffusion(DDPM):
             model = instantiate_from_config(config)
             self.cond_stage_model = model
         del self.cond_stage_model.loss
-        del self.cond_stage_model.decoder
+        # del self.cond_stage_model.decoder
 
     def _get_denoise_row_from_list(self, samples, desc='', force_no_decoder_quantization=False):
         denoise_row = []
@@ -557,7 +591,8 @@ class LatentDiffusion(DDPM):
     def get_learned_conditioning(self, c):
         if self.cond_stage_forward is None:
             if hasattr(self.cond_stage_model, 'encode') and callable(self.cond_stage_model.encode):
-                c, features = self.cond_stage_model.encode(c)
+                # c, features = self.cond_stage_model.encode(c)
+                c, features = self.first_stage_model.cond_encode(c)
                 if isinstance(c, DiagonalGaussianDistribution):
                     c = c.mode()
             else:
@@ -688,6 +723,10 @@ class LatentDiffusion(DDPM):
                 c = xc
             if bs is not None:
                 c = c[:bs]
+                bs_features = []
+                for feature in features:
+                    bs_features.append(feature[:bs])
+                features = bs_features
 
             if self.use_positional_encodings:
                 pos_x, pos_y = self.compute_latent_shifts(batch)
@@ -702,14 +741,14 @@ class LatentDiffusion(DDPM):
                 c = {'pos_x': pos_x, 'pos_y': pos_y}
         out = [z, c, features]
         if return_first_stage_outputs:
-            xrec = self.decode_first_stage(z, features)
+            xrec = self.decode_first_stage(z, features, c)
             out.extend([x, xrec])
         if return_original_cond:
             out.append(xc)
         return out
 
     @torch.no_grad()
-    def decode_first_stage(self, z, condfeatures, predict_cids=False, force_not_quantize=False):
+    def decode_first_stage(self, z, condfeatures, c, predict_cids=False, force_not_quantize=False):
         if predict_cids:
             if z.dim() == 4:
                 z = torch.argmax(z.exp(), dim=1).long()
@@ -760,13 +799,13 @@ class LatentDiffusion(DDPM):
                 if isinstance(self.first_stage_model, VQModelInterface):
                     return self.first_stage_model.decode(z, force_not_quantize=predict_cids or force_not_quantize)
                 else:
-                    return self.first_stage_model.decode(z)
+                    return self.first_stage_model.decode(z, condfeatures)
 
         else:
             if isinstance(self.first_stage_model, VQModelInterface):
                 return self.first_stage_model.decode(z, force_not_quantize=predict_cids or force_not_quantize)
             else:
-                return self.first_stage_model.decode(z, condfeatures)
+                return self.first_stage_model.decode(z, condfeatures, c)
 
     # same as above but without decorator
     def differentiable_decode_first_stage(self, z, predict_cids=False, force_not_quantize=False):
@@ -1256,7 +1295,7 @@ class LatentDiffusion(DDPM):
 
     @torch.no_grad()
     def log_images(self, batch, N=8, n_row=4, sample=True, ddim_steps=200, ddim_eta=1., return_keys=None,
-                   quantize_denoised=True, inpaint=True, plot_denoise_rows=False, plot_progressive_rows=False,
+                   quantize_denoised=False, inpaint=False, plot_denoise_rows=False, plot_progressive_rows=False,
                    plot_diffusion_rows=False, **kwargs):
 
         use_ddim = ddim_steps is not None
@@ -1310,7 +1349,7 @@ class LatentDiffusion(DDPM):
                 samples, z_denoise_row = self.sample_log(cond=c,batch_size=N,ddim=use_ddim,
                                                          ddim_steps=ddim_steps,eta=ddim_eta)
                 # samples, z_denoise_row = self.sample(cond=c, batch_size=N, return_intermediates=True)
-            x_samples = self.decode_first_stage(samples, features)
+            x_samples = self.decode_first_stage(samples, features, c)
             log["samples"] = x_samples
             if plot_denoise_rows:
                 denoise_grid = self._get_denoise_row_from_list(z_denoise_row)
@@ -1325,7 +1364,7 @@ class LatentDiffusion(DDPM):
                                                              quantize_denoised=True)
                     # samples, z_denoise_row = self.sample(cond=c, batch_size=N, return_intermediates=True,
                     #                                      quantize_denoised=True)
-                x_samples = self.decode_first_stage(samples.to(self.device), features.to(self.device))
+                x_samples = self.decode_first_stage(samples.to(self.device), features, c)
                 log["samples_x0_quantized"] = x_samples
 
             if inpaint:

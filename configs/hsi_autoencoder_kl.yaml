@@ -5,10 +5,10 @@ model:
   params:
     image_key: label
     cond_key: cond
-    monitor: "val/rec_loss"
+    monitor: "val/mrae_avg"
     embed_dim: 64
     learning_rate: 4.0e-4
-    ckpt_path: /work3/s212645/Spectral_Reconstruction/checkpoint/LDM/ae/lightning_logs/version_0/checkpoints/last.ckpt
+    # ckpt_path: /work3/s212645/Spectral_Reconstruction/checkpoint/LDM/ae/lightning_logs/version_0/checkpoints/last.ckpt
     cond_ckpt_path: /work3/s212645/Spectral_Reconstruction/checkpoint/LDM/cond/lightning_logs/version_0/checkpoints/last.ckpt
     lossconfig:
       target: models.vae.sndiscriminator.SpectralNormalizationWDiscriminator

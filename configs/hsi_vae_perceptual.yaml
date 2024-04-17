@@ -4,7 +4,7 @@ model:
   params:
     image_key: label
     monitor: "val/mrae_avg"
-    embed_dim: 512
+    embed_dim: 64
     learning_rate: 4.0e-4
     lossconfig:
       target: models.vae.sndiscriminator.SpectralNormalizationWDiscriminator
@@ -23,7 +23,7 @@ model:
 
     ddconfig:
       double_z: True
-      z_channels: 256
+      z_channels: 64
       resolution: 128
       in_channels: 31
       out_ch: 31
@@ -37,7 +37,7 @@ model:
 data:
   target: dataset.base.DataModuleFromConfig
   params:
-    batch_size: 32
+    batch_size: 48
     num_workers: 32
     train:
       target: dataset.datasets.TrainDataset
@@ -46,7 +46,7 @@ data:
         crop_size: 128
         valid_ratio: 0.1
         test_ratio: 0.1
-        aug: True
+        arg: True
         datanames: ['ARAD/']
     validation:
       target: dataset.datasets.ValidDataset
@@ -55,7 +55,7 @@ data:
         crop_size: 128
         valid_ratio: 0.1
         test_ratio: 0.1
-        aug: True
+        arg: True
         datanames: ['ARAD/']
 
 lightning:

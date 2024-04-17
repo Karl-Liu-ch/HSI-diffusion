@@ -26,6 +26,7 @@ from models.transformer.sn_swin_transformer_v2 import SwinTransformerBlock as SN
 from models.transformer.agent_swin import SwinTransformerBlock as AgentSwin
 from models.transformer.Base import BaseModel
 from dataset.datasets import TestFullDataset
+from torchsummary import summary
 os.environ["CUDA_DEVICE_ORDER"] = 'PCI_BUS_ID'
 if opt.multigpu:
     os.environ["CUDA_VISIBLE_DEVICES"] = opt.gpu_id
@@ -100,11 +101,15 @@ class SGFN(nn.Module):
         return x
 
 class SWTB(nn.Module):
-    def __init__(self, dim, input_resolution, num_heads=1, window_size=8):
+    def __init__(self, dim, input_resolution, num_heads=1, window_size=8, shift_size=0):
         super().__init__()
         self.input_resolution = input_resolution
+        self.model = nn.Sequential(
+            SwinTransformerBlock_v2(dim=dim, input_resolution=input_resolution, num_heads=num_heads, window_size=window_size, shift_size=0),
+            SwinTransformerBlock_v2(dim=dim, input_resolution=input_resolution, num_heads=num_heads, window_size=window_size, shift_size=window_size // 2)
+        )
         # self.model = SwinTransformerBlock(dim=dim, input_resolution=input_resolution, num_heads=num_heads, window_size=window_size)
-        self.model = SwinTransformerBlock_v2(dim=dim, input_resolution=input_resolution, num_heads=num_heads, window_size=window_size)
+        # self.model = SwinTransformerBlock_v2(dim=dim, input_resolution=input_resolution, num_heads=num_heads, window_size=window_size, shift_size=shift_size)
         # self.model = AgentSwin(dim=dim, input_resolution=input_resolution, num_heads=num_heads, window_size=window_size)
         # agent swin for later
         
@@ -120,12 +125,14 @@ class Adaptive_SWTB(nn.Module):
     def __init__(self, dim=31, 
                  input_resolution=(128,128), 
                  num_heads=1, 
-                 window_size=8):
+                 window_size=8, 
+                 shift_size=0):
         super().__init__()
         self.model = SWTB(dim=dim, 
                           input_resolution=input_resolution, 
                           num_heads=num_heads, 
-                          window_size=window_size)
+                          window_size=window_size,
+                          shift_size=shift_size)
         self.dwconv = nn.Sequential(
             nn.Conv2d(dim, dim, kernel_size=3, stride=1, padding=1,groups=dim),
             nn.BatchNorm2d(dim),
@@ -157,9 +164,6 @@ class Adaptive_SWTB(nn.Module):
         attnx = self.model(x)
         convx = self.dwconv(x)
         pool = torch.concat([self.avgpool(convx), self.maxpool(convx)], dim = 1)
-
-        # channelinter = F.softmax(self.channel_interaction(pool), dim = 1)
-        # spatialinter = F.softmax(self.spatial_interaction(convx).view(B, 1, H*W), dim=-1).view(B, 1, H, W)
 
         channelinter = torch.sigmoid(self.channel_interaction(pool))
         spatialinter = torch.sigmoid(self.spatial_interaction(convx))
@@ -213,9 +217,6 @@ class Adaptive_MSAB(nn.Module):
         convx = self.dwconv(x)
         pool = torch.concat([self.avgpool(convx), self.maxpool(convx)], dim = 1)
 
-        # channelinter = F.softmax(self.channel_interaction(pool), dim = 1)
-        # spatialinter = F.softmax(self.spatial_interaction(convx).view(B, 1, H*W), dim=-1).view(B, 1, H, W)
-
         channelinter = torch.sigmoid(self.channel_interaction(pool))
         spatialinter = torch.sigmoid(self.spatial_interaction(convx))
 
@@ -230,7 +231,7 @@ class Adaptive_MSAB(nn.Module):
         return out
 
 class DTNBlock(nn.Module):
-    def __init__(self, dim, dim_head, input_resolution, num_heads, window_size, num_block):
+    def __init__(self, dim, dim_head, input_resolution, num_heads, window_size, num_block, num_msab = 2):
         super().__init__()
         self.dim = dim
         self.dim_head = dim_head
@@ -239,8 +240,10 @@ class DTNBlock(nn.Module):
         self.window_size = window_size
         layer = []
         for i in range(num_block):
-            layer += [Adaptive_MSAB(dim, num_blocks=2, dim_head=dim_head, heads=dim // dim_head)]
+            layer += [Adaptive_MSAB(dim, num_blocks=num_msab, dim_head=dim_head, heads=dim // dim_head)]
             layer += [Adaptive_SWTB(dim, self.input_resolution, num_heads=dim // dim_head, window_size=window_size)]
+            # layer += [Adaptive_MSAB(dim, num_blocks=num_msab, dim_head=dim_head, heads=dim // dim_head)]
+            # layer += [Adaptive_SWTB(dim, self.input_resolution, num_heads=dim // dim_head, window_size=window_size, shift_size=window_size // 2)]
         self.model = nn.Sequential(*layer)
         
     def forward(self, x):
@@ -249,10 +252,16 @@ class DTNBlock(nn.Module):
 class DownSample(nn.Module):
     def __init__(self, inchannel, outchannel):
         super().__init__()
+        # self.model = nn.Sequential(
+        #     nn.Conv2d(inchannel, outchannel, kernel_size=4, stride=2, padding=1, bias=False),
+        #     nn.BatchNorm2d(outchannel), 
+        #     nn.ReLU(True)
+        # )
         self.model = nn.Sequential(
-            nn.Conv2d(inchannel, outchannel, kernel_size=4, stride=2, padding=1, bias=False),
-            # nn.BatchNorm2d(outchannel), 
-            # nn.ReLU(True)
+            nn.PixelUnshuffle(2),
+            nn.Conv2d(inchannel * 4, outchannel, kernel_size=3, stride=1, padding=1, bias=False), 
+            nn.BatchNorm2d(outchannel), 
+            nn.ReLU(True),
         )
         
     def forward(self, x):
@@ -260,10 +269,16 @@ class DownSample(nn.Module):
 class UpSample(nn.Module):
     def __init__(self, inchannel, outchannel):
         super().__init__()
+        # self.model = nn.Sequential(
+        #     nn.ConvTranspose2d(inchannel, outchannel, kernel_size=4, stride=2, padding=1, bias=False),
+        #     nn.BatchNorm2d(outchannel), 
+        #     nn.ReLU(True)
+        # )
         self.model = nn.Sequential(
-            nn.ConvTranspose2d(inchannel, outchannel, kernel_size=4, stride=2, padding=1, bias=False),
-            # nn.BatchNorm2d(outchannel), 
-            # nn.ReLU(True)
+            nn.Conv2d(inchannel, outchannel * 4, kernel_size=3, stride=1, padding=1, bias=False), 
+            nn.BatchNorm2d(outchannel * 4), 
+            nn.ReLU(True),
+            nn.PixelShuffle(2)
         )
         
     def forward(self, x):
@@ -279,7 +294,8 @@ class DTN(nn.Module):
                  img_size = [128, 128], 
                  window_size = 8, 
                  n_block=[2,2,2,2], 
-                 bottleblock = 4):
+                 bottleblock = 4, 
+                 num_msab = 1):
         super().__init__()
         dim = out_dim
         self.embedding = nn.Conv2d(in_dim, dim, 3, 1, 1, bias=False)
@@ -294,7 +310,8 @@ class DTN(nn.Module):
                          input_resolution = img_size, 
                          num_heads = dim_stage // dim, 
                          window_size = window_size, 
-                         num_block = num_block),
+                         num_block = num_block,
+                         num_msab=num_msab),
                 DownSample(dim_stage, dim_stage * 2),
             ]))
             img_size[0] = img_size[0] // 2
@@ -438,7 +455,7 @@ class TrainDTN(BaseModel):
         criterion_sam.reset()
         criterion_psnr.reset()
         criterion_psnrrgb.reset()
-        file = '/zhome/02/b/164706/Master_Courses/2023_Fall/Spectral_Reconstruction/result.txt'
+        file = '/zhome/02/b/164706/Master_Courses/thesis/HSI-diffusion/result.txt'
         f = open(file, 'a')
         f.write(modelname+':\n')
         f.write(f'MRAE:{losses_mrae.avg}, RMSE: {losses_rmse.avg}, PNSR:{losses_psnr.avg}, SAM: {losses_sam.avg}, SID: {losses_sid.avg}, SSIM: {losses_ssim.avg}, PSNRRGB: {losses_psnrrgb.avg}')
@@ -447,7 +464,7 @@ class TrainDTN(BaseModel):
 
 
 class DTN_multi_stage(nn.Module):
-    def __init__(self, *, in_channels=3, out_channels=31, n_feat=31, stage=3, img_size=[128, 128], window = 32, **kargs):
+    def __init__(self, *, in_channels=3, out_channels=31, n_feat=31, stage=3, img_size=[128, 128], window = 32, num_msab = 1, **kargs):
         super(DTN_multi_stage, self).__init__()
         self.stage = stage
         self.conv_in = nn.Conv2d(in_channels, n_feat, kernel_size=3, padding=(3 - 1) // 2,bias=False)
@@ -459,7 +476,8 @@ class DTN_multi_stage(nn.Module):
                             img_size = [img_size[0]+pad_h, img_size[1]+pad_w], 
                             window_size = 8, 
                             n_block=[1,1], 
-                            bottleblock = 1) for _ in range(stage)]
+                            bottleblock = 1,
+                            num_msab = num_msab) for _ in range(stage)]
         self.body = nn.Sequential(*modules_body)
         self.conv_out = nn.Conv2d(n_feat * 2, out_channels, kernel_size=3, padding=(3 - 1) // 2,bias=False)
 
@@ -488,10 +506,11 @@ if __name__ == '__main__':
                     window_size=8, 
                     n_block=[2,2,2,2], 
                     bottleblock = 4).to(device)
-    model = DTN_multi_stage(in_channels=3, out_channels=31, n_feat=31, img_size=[36, 36], window=32).to(device)
-    input = torch.rand([1, 3, 36, 36]).to(device)
+    # model = DTN_multi_stage(in_channels=3, out_channels=31, n_feat=31, img_size=[128, 128], window=32).to(device)
+    input = torch.rand([1, 3, 128, 128]).to(device)
     output = model(input.float())
     print(output.shape)
+    summary(model, (3, 128, 128))
     # spec = TrainDTN(opt, model, model_name='DTN')
     # if opt.loadmodel:
     #     try:

@@ -14,6 +14,10 @@ import torch.nn as nn
 import scipy.io
 import re
 import matplotlib.pyplot as plt
+from torch import randperm
+from tqdm import tqdm
+generator = torch.Generator().manual_seed(42)
+indices = randperm(31, generator=generator).tolist()
 
 root = '/work3/s212645/Spectral_Reconstruction/'
 datanames = ['ICVL/', 'ARAD/', 'CAVE/']
@@ -77,19 +81,14 @@ def get_dataset(path, list, imsize):
 def get_full_dataset(path, list):
     specs = []
     rgbs = []
-    for file in list:
+    pbar = tqdm(list)
+    for file in pbar:
         mat = scipy.io.loadmat(path+file)
         spec = np.float32(np.array(mat['cube']))
         rgb = np.float32(np.array(mat['rgb']))
-        h = int((rgb.shape[0] // 128) * 128)
-        w = int((rgb.shape[1] // 128) * 128)
-        spec = spec[:h, :w, :]
-        rgb = rgb[:h, :w, :]
-        print(h, w)
         specs.append(spec)
         rgbs.append(rgb)
-        # break
-        print('finish: ', file)
+        pbar.set_postfix({'File':file})
     return specs, rgbs
 
 def split_train(path, valid_ratio, test_ratio, imsize):
@@ -192,16 +191,121 @@ def split_valid(path, valid_ratio, test_ratio, imsize):
     valid_sets = get_dataset(path, validlist, imsize)
     return valid_sets
 
+def random_split_train(path, valid_ratio, test_ratio, imsize):
+    filelist = os.listdir(path)
+    filelist.sort()
+    reg = re.compile(r'.*.mat')
+    matlist = []
+    for file in filelist:
+        if re.match(reg, file):
+            matlist.append(file)
+    all_length = len(matlist)
+    test_size = int(all_length * test_ratio)
+    valid_size = int(all_length * valid_ratio)
+    train_size = all_length - test_size - valid_size
+    matlist.sort()
+    trainlist = []
+    validlist = []
+    testlist = []
+
+    indices = randperm(all_length, generator=generator).tolist()
+    for i in range(train_size):
+        trainlist.append(matlist[indices[i]])
+    for j in range(valid_size):
+        validlist.append(matlist[indices[j + train_size]])
+    for k in range(test_size):
+        testlist.append(matlist[indices[k + train_size + valid_size]])
+    train_sets = get_dataset(path, trainlist, imsize)
+    return train_sets
+
+def random_split_test(path, valid_ratio, test_ratio, imsize):
+    filelist = os.listdir(path)
+    filelist.sort()
+    reg = re.compile(r'.*.mat')
+    matlist = []
+    for file in filelist:
+        if re.match(reg, file):
+            matlist.append(file)
+    all_length = len(matlist)
+    test_size = int(all_length * test_ratio)
+    valid_size = int(all_length * valid_ratio)
+    train_size = all_length - test_size - valid_size
+    matlist.sort()
+    trainlist = []
+    validlist = []
+    testlist = []
+    indices = randperm(all_length, generator=generator).tolist()
+    for i in range(train_size):
+        trainlist.append(matlist[indices[i]])
+    for j in range(valid_size):
+        validlist.append(matlist[indices[j + train_size]])
+    for k in range(test_size):
+        testlist.append(matlist[indices[k + train_size + valid_size]])
+    test_sets = get_dataset(path, testlist, imsize)
+    return test_sets
+
+def random_split_full_test(path, valid_ratio, test_ratio):
+    filelist = os.listdir(path)
+    filelist.sort()
+    reg = re.compile(r'.*.mat')
+    matlist = []
+    for file in filelist:
+        if re.match(reg, file):
+            matlist.append(file)
+    all_length = len(matlist)
+    test_size = int(all_length * test_ratio)
+    valid_size = int(all_length * valid_ratio)
+    train_size = all_length - test_size - valid_size
+    matlist.sort()
+    trainlist = []
+    validlist = []
+    testlist = []
+    indices = randperm(all_length, generator=generator).tolist()
+    for i in range(train_size):
+        trainlist.append(matlist[indices[i]])
+    for j in range(valid_size):
+        validlist.append(matlist[indices[j + train_size]])
+    for k in range(test_size):
+        testlist.append(matlist[indices[k + train_size + valid_size]])
+    test_sets = get_full_dataset(path, testlist)
+    return test_sets
+
+def random_split_valid(path, valid_ratio, test_ratio, imsize):
+    filelist = os.listdir(path)
+    filelist.sort()
+    reg = re.compile(r'.*.mat')
+    matlist = []
+    for file in filelist:
+        if re.match(reg, file):
+            matlist.append(file)
+    all_length = len(matlist)
+    test_size = int(all_length * test_ratio)
+    valid_size = int(all_length * valid_ratio)
+    train_size = all_length - test_size - valid_size
+    matlist.sort()
+    trainlist = []
+    validlist = []
+    testlist = []
+    indices = randperm(all_length, generator=generator).tolist()
+    for i in range(train_size):
+        trainlist.append(matlist[indices[i]])
+    for j in range(valid_size):
+        validlist.append(matlist[indices[j + train_size]])
+    for k in range(test_size):
+        testlist.append(matlist[indices[k + train_size + valid_size]])
+    valid_sets = get_dataset(path, validlist, imsize)
+    return valid_sets
+
 def get_all_mats(path, filelist, imsize):
     specs = []
     rgbs = []
-    for file in filelist:
+    pbar = tqdm(filelist)
+    for file in pbar:
         mat = scipy.io.loadmat(path+file)
         spec, rgb = get_all_patches(mat, imsize)
         specs += spec
         rgbs += rgb
-        # break
-        print('finish: ', file)
+        pbar.set_postfix({'File':file})
     return specs, rgbs
     
 def Resize(hyper, rgb, h, w):

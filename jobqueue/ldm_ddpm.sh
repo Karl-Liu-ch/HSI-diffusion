@@ -14,7 +14,7 @@
 ### -- set walltime limit: hh:mm --  maximum 24 hours for GPU-queues right now
 #BSUB -W 24:00
 # request 40GB of system-memory
-#BSUB -R "rusage[mem=40GB]"
+#BSUB -R "rusage[mem=20GB]"
 ### -- set the email address --
 # please uncomment the following line and put in your e-mail address,
 # if you want to receive e-mail notifications on a non-default address
@@ -36,4 +36,4 @@ source ./miniconda3/bin/activate
 conda activate pytorch
 cd /zhome/02/b/164706/Master_Courses/thesis/HSI-diffusion/
 export PYTHONUNBUFFERED=1
-python -u main.py -c configs/hsi_ldm.yaml -l /work3/s212645/Spectral_Reconstruction/checkpoint/LDM/ldm/ --batch_size 32
+python -u main.py -c configs/hsi_ldm.yaml -l /work3/s212645/Spectral_Reconstruction/checkpoint/LDM/ldm/ --batch_size 96 -r /work3/s212645/Spectral_Reconstruction/checkpoint/LDM/ldm/lightning_logs/version_0/checkpoints/last.ckpt

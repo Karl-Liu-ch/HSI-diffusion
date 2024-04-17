@@ -17,8 +17,50 @@ import cv2
 from einops import repeat
 import importlib
 from omegaconf import OmegaConf
+from differential_color_functions import *
+from guided_filter import *
+device = 'cuda' if torch.cuda.is_available() else 'cpu'
 rgbfilterpath = 'resources/RGB_Camera_QE.csv'
 camera_filter, filterbands = load_rgb_filter(rgbfilterpath)
+cube_bands = np.linspace(400,700,31)
+index = np.linspace(40, 340, 31)
+cam_filter = np.zeros([31, 3])
+count = 0
+for i in index:
+    i = int(i)
+    cam_filter[count,:] = camera_filter[i,:] 
+    count += 1
+CAM_FILTER = cam_filter.astype(np.float32)
+
+def deltaELoss(fake, gt, filter = GuidedFilter(radius=5, eps = 0.1)):
+    # fake = filter(fake, fake)
+    # gt = filter(gt, gt)
+    loss = ciede2000_diff(rgb2lab_diff(gt, device), rgb2lab_diff(fake, device), device)
+    color_loss=loss.mean()
+    return color_loss
+
+class LossDeltaE(nn.Module):
+    def __init__(self):
+        super(LossDeltaE, self).__init__()
+        self.model_hs2rgb = nn.Conv2d(31, 3, 1, bias=False)
+        cie_matrix = CAM_FILTER
+        cie_matrix = torch.from_numpy(np.transpose(cie_matrix, [1, 0])).unsqueeze(-1).unsqueeze(-1).float()
+        self.model_hs2rgb.weight.data = cie_matrix
+        self.model_hs2rgb.weight.requires_grad = False
+
+    def forward(self, outputs, label, rgb_gt = None):
+        # hs2rgb
+        if rgb_gt is None:
+            rgb_tensor = self.model_hs2rgb(outputs)
+            rgb_tensor = normalization_image(rgb_tensor)
+            rgb_label = self.model_hs2rgb(label)
+            rgb_label = normalization_image(rgb_label)
+        else:
+            rgb_tensor = self.model_hs2rgb(outputs)
+            rgb_tensor = normalization_image(rgb_tensor)
+            rgb_label = normalization_image(rgb_gt)
+        deltaE = deltaELoss(rgb_tensor, rgb_label)
+        return deltaE
 
 def load_lightning2torch(ckpt_path, model, name = 'encoder'):
     name += '.'
@@ -53,8 +95,8 @@ def get_obj_from_str(string, reload=False):
 
 def normalization_image(x):
     B, C, H, W = x.shape
-    v_min = x.view(B, -1).min(dim=1)[0]
-    v_max = x.view(B, -1).max(dim=1)[0]
+    v_min = x.reshape(B, -1).min(dim=1)[0]
+    v_max = x.reshape(B, -1).max(dim=1)[0]
     v_min = repeat(v_min, 'b -> b c h w', c = C, h = H, w = W)
     v_max = repeat(v_max, 'b -> b c h w', c = C, h = H, w = W)
     x_norm = (x - v_min) / (v_max - v_min)

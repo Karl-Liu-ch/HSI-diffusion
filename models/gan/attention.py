@@ -107,7 +107,7 @@ class MS_MSA(nn.Module):
         self.proj = SNLinear(dim_head * heads, dim, bias=True)
         self.pos_emb = nn.Sequential(
             SNConv2d(dim, dim, 3, 1, 1, bias=False, groups=dim),
-            nn.ReLU(),
+            nn.GELU(),
             SNConv2d(dim, dim, 3, 1, 1, bias=False, groups=dim),
         )
         self.dim = dim
@@ -148,9 +148,9 @@ class FeedForward(nn.Module):
         super().__init__()
         self.net = nn.Sequential(
             SNConv2d(dim, dim * mult, 1, 1, bias=False),
-            nn.ReLU(),
+            nn.GELU(),
             SNConv2d(dim * mult, dim * mult, 3, 1, 1, bias=False, groups=dim * mult),
-            nn.ReLU(),
+            nn.GELU(),
             SNConv2d(dim * mult, dim, 1, 1, bias=False),
         )
 

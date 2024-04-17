@@ -2,9 +2,9 @@
 ### General options
 ### –- specify queue --
 #BSUB -q gpua100
-###BSUB -R "select[gpu80gb]"
+#BSUB -R "select[gpu80gb]"
 ### -- set the job Name --
-#BSUB -J ldm_cond_ae
+#BSUB -J dtn_sn_pix2pix
 ### -- ask for number of cores (default: 1) --
 #BSUB -n 8
 ### -- specify that the cores must be on the same host --
@@ -25,8 +25,8 @@
 #BSUB -B
 ### -- Specify the output and error file. %J is the job-id --
 ### -- -o and -e mean append, -oo and -eo mean overwrite --
-#BSUB -o ldm_cond_ae%J.out
-#BSUB -e ldm_cond_ae%J.err
+#BSUB -o dtn_sn_pix2pix%J.out
+#BSUB -e dtn_sn_pix2pix%J.err
 # -- end of LSF options --
 nvidia-smi
 module load cuda/11.8
@@ -36,4 +36,7 @@ source ./miniconda3/bin/activate
 conda activate pytorch
 cd /zhome/02/b/164706/Master_Courses/thesis/HSI-diffusion/
 export PYTHONUNBUFFERED=1
-python -u main.py -c configs/hsi_autoencoder_kl_cond.yaml -l /work3/s212645/Spectral_Reconstruction/checkpoint/LDM/cond/ --batch_size 24
+python -u train.py -c configs/dtn_sn_pix2pix.yaml --gpu_id 0 --batch_size 32 --mode train
+# python -u train.py -c configs/msdtn_sndisc.yaml --gpu_id 0 --batch_size 16 --mode train
+# python -u models/gan/swin-gan.py --gpu_id 0 --batch_size 40 --G DTN --mode train
+# python -u models/gan/swin-gan.py --gpu_id 0 --batch_size 16 --G DTN --mode train

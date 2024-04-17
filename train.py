@@ -1,4 +1,5 @@
-from utils import *
+from utils import instantiate_from_config
+import torch
 import os
 from omegaconf import OmegaConf
 import argparse
@@ -10,7 +11,7 @@ parser.add_argument('--mode', type=str, default='train')
 parser.add_argument("--batch_size", type=int, default=32, help="batch size")
 parser.add_argument("--end_epoch", type=int, default=101, help="number of epochs")
 parser.add_argument("--learning_rate", type=float, default=4e-4, help="initial learning rate")
-parser.add_argument("--ckpath", type=str, default='/work3/s212645/Spectral_Reconstruction/checkpoint/gan/msdtn/')
+# parser.add_argument("--ckpath", type=str, default='/work3/s212645/Spectral_Reconstruction/checkpoint/gan/msdtn/')
 parser.add_argument("--data_root", type=str, default='/work3/s212645/Spectral_Reconstruction/')
 parser.add_argument("--patch_size", type=int, default=128, help="patch size")
 parser.add_argument("--stride", type=int, default=8, help="stride")
@@ -33,4 +34,21 @@ if __name__ == '__main__':
     cfg = OmegaConf.load(cfg_path)
     cfg.params.update(vars(opt))
     model = instantiate_from_config(cfg)
-    model.train()
+    modelname = str(cfg.params.genconfig.target).split('.')[-1]
+    if opt.resume:
+        try:
+            model.load_checkpoint()
+        except Exception as ex:
+            print(ex)
+    if opt.mode == 'train':
+        try:
+            model.load_checkpoint()
+        except Exception as ex:
+            print(ex)
+        model.train()
+    elif opt.mode == 'test':
+        model.load_checkpoint(best=True)
+        model.test(modelname)
+    elif opt.mode == 'testfull':
+        model.load_checkpoint(best=True)
+        model.test_full_resol(modelname)

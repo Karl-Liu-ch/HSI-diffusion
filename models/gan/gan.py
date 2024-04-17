@@ -8,6 +8,9 @@ import os
 from torch.utils.data import DataLoader
 from torch.autograd import Variable
 from models.gan.networks import *
+from torch.utils.tensorboard import SummaryWriter
+from tqdm import tqdm
+from torchsummary import summary
 # from models.transformer import MST_Plus_Plus, DTN
 from utils import *
 os.environ["CUDA_DEVICE_ORDER"] = 'PCI_BUS_ID'
@@ -64,6 +67,7 @@ class Gan():
             self.D = nn.DataParallel(self.D)
         self.G.cuda()
         self.D.cuda()
+        summary(self.G, (6, 128, 128))
         self.noise = noise
         self.datanames = datanames
         self.epoch = 0
@@ -82,10 +86,11 @@ class Gan():
         self.use_feature = use_feature
         
         self.optimG = optim.Adam(self.G.parameters(), lr=learning_rate, betas=(0.9, 0.999))
-        self.schedulerG = torch.optim.lr_scheduler.CosineAnnealingLR(self.optimG, self.total_iteration, eta_min=1e-6)
+        # self.schedulerG = torch.optim.lr_scheduler.CosineAnnealingLR(self.optimG, self.end_epoch, eta_min=1e-6)
         self.optimD = optim.Adam(self.D.parameters(), lr=learning_rate, betas=(0.9, 0.999))
-        self.schedulerD = torch.optim.lr_scheduler.CosineAnnealingLR(self.optimD, self.total_iteration, eta_min=1e-6)
+        # self.schedulerD = torch.optim.lr_scheduler.CosineAnnealingLR(self.optimD, self.end_epoch, eta_min=1e-6)
         self.root = ckpath
+        self.writer = SummaryWriter(log_dir=self.root + 'runs/')
         if not os.path.exists(self.root):
             os.makedirs(self.root)
         self.init_metrics()
@@ -110,7 +115,10 @@ class Gan():
         print("Validation set samples: ", len(self.val_data))
         
     def get_last_layer(self):
-        return self.G.get_last_layer()
+        if self.multiGPU:
+            return self.G.module.get_last_layer()
+        else:
+            return self.G.get_last_layer()
 
     def calculate_adaptive_weight(self, rec_loss, g_loss, last_layer=None):
         if last_layer is not None:
@@ -127,14 +135,19 @@ class Gan():
     
     def train(self):
         self.load_dataset()
+        iter_per_epoch = len(self.train_data)
+        self.total_iteration = self.end_epoch * (iter_per_epoch // self.batch_size + 1)
+        self.schedulerG = torch.optim.lr_scheduler.CosineAnnealingLR(self.optimG, self.total_iteration, eta_min=1e-6)
+        self.schedulerD = torch.optim.lr_scheduler.CosineAnnealingLR(self.optimD, self.total_iteration, eta_min=1e-6)
         while self.epoch<self.end_epoch:
             self.G.train()
             self.D.train()
             losses = AverageMeter()
             train_loader = DataLoader(dataset=self.train_data, batch_size=self.batch_size, shuffle=True, num_workers=32,
-                                    pin_memory=True, drop_last=True)
+                                    pin_memory=True, drop_last=False)
             val_loader = DataLoader(dataset=self.val_data, batch_size=self.batch_size, shuffle=False, num_workers=32, pin_memory=True)
-            for i, batch in enumerate(train_loader):
+            pbar = tqdm(train_loader)
+            for i, batch in enumerate(pbar):
                 labels = batch['label'].cuda()
                 images = batch['ycrcb'].cuda()
                 images = Variable(images)
@@ -145,77 +158,57 @@ class Gan():
                     z = Variable(z)
                 else:
                     z = images
-                # realAB = torch.concat([images, labels], dim=1)
-                # D_real, D_real_feature = self.D(realAB)
                 x_fake = self.G(z)
-                # fakeAB = torch.concat([images, x_fake],dim=1)
                 
                 # train G
                 self.optimG.zero_grad()
                 lrG = self.optimG.param_groups[0]['lr']
                 loss_G = self.loss(self.D, x_fake, labels, images, 0, self.iteration, last_layer = self.get_last_layer())
-                # for p in self.D.parameters():
-                #     p.requires_grad = False
-                # pred_fake, D_fake_feature = self.D(fakeAB)
-                # loss_G = -pred_fake.mean(0).view(1)
-                # lossl1 = self.lossl1(x_fake, labels) * self.lambdal1
-                # losssam = SAM(x_fake, labels) * self.lambdasam
-                # perceptual_loss = 0
-                # for k in range(len(D_fake_feature)):
-                #     perceptual_loss += nn.MSELoss()(D_real_feature[k].detach(), D_fake_feature[k])
-                # weight_gan = self.calculate_adaptive_weight(lossl1 + losssam, loss_G, self.get_last_layer())
-                # loss_G *= weight_gan
-                # loss_G += lossl1 + losssam
-                # loss_G += lossl1 + losssam + perceptual_loss * self.lambdaperceptual * weight_gan / len(D_fake_feature)
-                # train the generator
                 loss_G.backward()
                 self.optimG.step()
                 
                 # train D
                 self.optimD.zero_grad()
-                # for p in self.D.parameters():
-                #     p.requires_grad = True
-                # D_real, D_real_feature = self.D(realAB)
-                # loss_real = -D_real.mean(0).view(1)
-                # D_fake, D_fake_feature = self.D(fakeAB.detach())
-                # loss_fake = D_fake.mean(0).view(1)
-                # perceptual_loss = 0
-                # for k in range(len(D_fake_feature)):
-                #     perceptual_loss -= nn.MSELoss()(D_real_feature[k], D_fake_feature[k])
-                # loss_d = loss_real + loss_fake + perceptual_loss * self.lambda_disc
                 loss_d = self.loss(self.D, x_fake, labels, images, 1, self.iteration, last_layer = self.get_last_layer())
                 loss_d.backward()
                 self.optimD.step()
+                self.schedulerD.step()
+                self.schedulerG.step()
                 
                 loss_mrae = criterion_mrae(x_fake, labels)
                 losses.update(loss_mrae.data)
+                self.writer.add_scalar("MRAE/train", loss_mrae, self.iteration)
+                self.writer.add_scalar("lr/train", lrG, self.iteration)
+                self.writer.add_scalar("loss_G/train", loss_G, self.iteration)
+                self.writer.add_scalar("loss_D/train", loss_d, self.iteration)
                 self.iteration = self.iteration+1
-                if self.iteration % 20 == 0:
-                    print('[epoch:%d/%d], lr=%.9f, train_losses.avg=%.9f, disc losses=%.9f, %.9f'
-                        % (self.epoch, self.end_epoch, lrG, losses.avg, loss_G, loss_d))
+                logs = {'epoch':self.epoch, 'iter':self.iteration, 'lr':'%.9f'%lrG, 'train_losses':'%.9f'%(losses.avg), 'G_loss':'%.9f'%(loss_G), 'D_loss':'%.9f'%(loss_d)}
+                pbar.set_postfix(logs)
             # validation
             mrae_loss, rmse_loss, psnr_loss, sam_loss, sid_loss = self.validate(val_loader)
             print(f'MRAE:{mrae_loss}, RMSE: {rmse_loss}, PNSR:{psnr_loss}, SAM: {sam_loss}, SID: {sid_loss}')
+            self.writer.add_scalar("MRAE/val", mrae_loss, self.epoch)
+            self.writer.add_scalar("RMSE/val", rmse_loss, self.epoch)
+            self.writer.add_scalar("PNSR/val", psnr_loss, self.epoch)
+            self.writer.add_scalar("SAM/val", sam_loss, self.epoch)
             # Save model
             print(f'Saving to {self.root}')
             self.save_checkpoint()
             if mrae_loss < self.best_mrae:
                 self.best_mrae = mrae_loss
                 self.save_checkpoint(True)
-            # save_top, top_n = self.save_top_k(mrae_loss.detach().cpu().numpy())
-            # if save_top:
-            #     self.save_checkpoint(top_k=top_n)
-            # print loss
             print(" Iter[%06d], Epoch[%06d], learning rate : %.9f, Train MRAE: %.9f, Test MRAE: %.9f, "
                 "Test RMSE: %.9f, Test PSNR: %.9f, SAM: %.9f, SID: %.9f " % (self.iteration, 
                                                                 self.epoch, lrG, 
                                                                 losses.avg, mrae_loss, rmse_loss, psnr_loss, sam_loss, sid_loss))
             self.epoch += 1
-            self.schedulerD.step()
-            self.schedulerG.step()
             if mrae_loss > 100.0: 
                 break
- 
+
+    def hsi2rgb(self, hsi):
+        rgb = self.loss.deltaELoss.model_hs2rgb(hsi)
+        return rgb
+
     def validate(self, val_loader):
         self.G.eval()
         losses_mrae = AverageMeter()
@@ -223,7 +216,8 @@ class Gan():
         losses_psnr = AverageMeter()
         losses_sam = AverageMeter()
         losses_sid = AverageMeter()
-        for i, batch in enumerate(val_loader):
+        pbar = tqdm(val_loader)
+        for i, batch in enumerate(pbar):
             target = batch['label'].cuda()
             input = batch['ycrcb'].cuda()
             if self.noise:
@@ -235,11 +229,18 @@ class Gan():
             with torch.no_grad():
                 # compute output
                 output = self.G(z)
+                if i == 0:
+                    rgb = self.hsi2rgb(output)[0,:,:,:]
+                    self.writer.add_image("fake/val", rgb, self.epoch)
+                    rgb = self.hsi2rgb(target)[0,:,:,:]
+                    self.writer.add_image("real/val", rgb, self.epoch)
                 loss_mrae = criterion_mrae(output, target)
                 loss_rmse = criterion_rmse(output, target)
                 loss_psnr = criterion_psnr(output, target)
                 loss_sam = criterion_sam(output, target)
                 loss_sid = criterion_sid(output, target)
+                logs = {'MRAE':'%.9f'%(loss_mrae), 'RMSE':'%.9f'%loss_rmse, 'PSNR':'%.9f'%loss_psnr, 'SAM':'%.9f'%loss_sam}
+                pbar.set_postfix(logs)
             # record loss
             losses_mrae.update(loss_mrae.data)
             losses_rmse.update(loss_rmse.data)
@@ -281,7 +282,7 @@ class Gan():
         losses_fid = AverageMeter()
         losses_ssim = AverageMeter()
         count = 0
-        for i, batch in enumerate(test_loader):
+        for i, batch in enumerate(tqdm(test_loader)):
             target = batch['label'].cuda()
             input = batch['ycrcb'].cuda()
             rgb_gt = batch['cond'].cuda()
@@ -331,7 +332,7 @@ class Gan():
         criterion_sam.reset()
         criterion_psnr.reset()
         criterion_psnrrgb.reset()
-        file = '/zhome/02/b/164706/Master_Courses/2023_Fall/Spectral_Reconstruction/result.txt'
+        file = '/zhome/02/b/164706/Master_Courses/thesis/HSI-diffusion/result.txt'
         f = open(file, 'a')
         f.write(modelname+':\n')
         f.write(f'MRAE:{losses_mrae.avg}, RMSE: {losses_rmse.avg}, PNSR:{losses_psnr.avg}, SAM: {losses_sam.avg}, SID: {losses_sid.avg}, FID: {losses_fid.avg}, SSIM: {losses_ssim.avg}, PSNRRGB: {losses_psnrrgb.avg}')
@@ -432,7 +433,7 @@ class Gan():
         print("Test set samples: ", len(test_data))
         test_loader = DataLoader(dataset=test_data, batch_size=1, shuffle=False, num_workers=32, pin_memory=True)
         count = 0
-        for i, (input, target, rgb_gt) in enumerate(test_loader):
+        for i, (input, target, rgb_gt) in enumerate(tqdm(test_loader)):
             input = input.cuda()
             target = target.cuda()
             rgb_gt = rgb_gt.cuda()

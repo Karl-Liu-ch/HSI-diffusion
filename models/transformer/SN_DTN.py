@@ -113,7 +113,11 @@ class SWTB(nn.Module):
         self.input_resolution = input_resolution
         # self.model = SwinTransformerBlock(dim=dim, input_resolution=input_resolution, num_heads=num_heads, window_size=window_size)
         # self.model = SwinTransformerBlock_v2(dim=dim, input_resolution=input_resolution, num_heads=num_heads, window_size=window_size)
-        self.model = SN_SwinTransformerBlock(dim=dim, input_resolution=input_resolution, num_heads=num_heads, window_size=window_size)
+        # self.model = SN_SwinTransformerBlock(dim=dim, input_resolution=input_resolution, num_heads=num_heads, window_size=window_size)
+        self.model = nn.Sequential(
+            SN_SwinTransformerBlock(dim=dim, input_resolution=input_resolution, num_heads=num_heads, window_size=window_size, shift_size=0),
+            SN_SwinTransformerBlock(dim=dim, input_resolution=input_resolution, num_heads=num_heads, window_size=window_size, shift_size=window_size // 2)
+        )
         # agent swin for later
         
     def forward(self, x):
@@ -308,7 +312,7 @@ def ReverseTuples(tuples):
     new_tup = tuples[::-1]
     return new_tup
 
-class DTN(nn.Module):
+class SN_DTN(nn.Module):
     def __init__(self, in_dim, 
                  out_dim,
                  img_size = [128, 128], 
@@ -393,16 +397,16 @@ class DTN(nn.Module):
     def get_last_layer(self):
         return self.mapping.convout.weight_orig
 
-class SN_DTN(nn.Module):
+class Multi_Stage_SN_DTN(nn.Module):
     def __init__(self, in_channels=3, out_channels=31, n_feat=31, stage=3, img_size=[128, 128], window = 32):
-        super(SN_DTN, self).__init__()
+        super(Multi_Stage_SN_DTN, self).__init__()
         self.stage = stage
         self.conv_in = SNConv2d(in_channels, n_feat, kernel_size=3, padding=(3 - 1) // 2,bias=False)
         self.window = window
         hb, wb = window, window
         pad_h = (hb - img_size[0] % hb) % hb
         pad_w = (wb - img_size[1] % wb) % wb
-        modules_body = [DTN(in_dim=n_feat, 
+        modules_body = [SN_DTN(in_dim=n_feat, 
                             out_dim=out_channels,
                             img_size = [img_size[0]+pad_h, img_size[1]+pad_w], 
                             window_size = 8, 
@@ -462,7 +466,7 @@ class TrainDTN(BaseModel):
             target = target.cuda()
             H, W = input.shape[-2], input.shape[-1]
             if H != H_ or W != W_:
-                self.G = DTN(in_dim=3, 
+                self.G = SN_DTN(in_dim=3, 
                         out_dim=31,
                         img_size=[H, W], 
                         window_size=8, 

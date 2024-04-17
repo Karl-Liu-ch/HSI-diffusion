@@ -70,8 +70,8 @@ if __name__ == '__main__':
     vae_path = logdir
 
     checkpoint_callback = ModelCheckpoint(
-        monitor='val/mrae_avg',
-        # monitor='val/loss_ema',
+        # monitor='val/mrae_avg',
+        monitor=cfg.model.params.monitor,
         save_top_k=3,
         mode='min',
         save_last=True,

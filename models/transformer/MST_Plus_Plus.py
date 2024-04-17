@@ -9,6 +9,7 @@ import sys
 sys.path.append('./')
 from options import opt
 from models.transformer.Base import BaseModel
+from torchsummary import summary
 
 def _no_grad_trunc_normal_(tensor, mean, std, a, b):
     def norm_cdf(x):
@@ -296,13 +297,14 @@ class MST_Plus_Plus(nn.Module):
         return h[:, :, :h_inp, :w_inp]
 
 if __name__ == '__main__':
-    model = MST_Plus_Plus().cuda()
-    train_model = BaseModel(opt, model, model_name='MSTPlusPlus')
-    if opt.loadmodel:
-        try:
-            train_model.load_checkpoint(best=True)
-            print("model loaded")
-        except:
-            pass
-    train_model.train()
-    train_model.test()
+    model = MST_Plus_Plus()
+    summary(model, (3, 128, 128))
+    # train_model = BaseModel(opt, model, model_name='MSTPlusPlus')
+    # if opt.loadmodel:
+    #     try:
+    #         train_model.load_checkpoint(best=True)
+    #         print("model loaded")
+    #     except:
+    #         pass
+    # train_model.train()
+    # train_model.test()

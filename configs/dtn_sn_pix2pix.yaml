@@ -1,10 +1,10 @@
 target: models.gan.gan.Gan
 params:
-  ckpath: /work3/s212645/Spectral_Reconstruction/checkpoint/gan/SN_DTN-SNResnetDiscriminator/
+  ckpath: /work3/s212645/Spectral_Reconstruction/checkpoint/gan/DTN-SN_NLayerDiscriminator/
   valid_ratio: 0.1
-  test_ratio: 0.8
+  test_ratio: 0.1
   genconfig:
-    target: models.transformer.SN_DTN
+    target: models.transformer.DTN
     params:
       in_dim: 6
       out_dim: 31
@@ -14,20 +14,18 @@ params:
       bottleblock: 4
 
   disconfig:
-    target: models.gan.networks.SNResnetDiscriminator
+    target: models.gan.networks.SN_NLayerDiscriminator
     params:
-      input_nums: 37
-      n_layer: 3
-      n_block: 1
+      input_nc: 37
 
   lossconfig:
-    target: models.losses.gan_loss.Wasserstein_Loss
+    target: models.losses.gan_loss.LS_Loss
     params:
       l1_weight: 40.0
       sam_weight: 1.0
       features_weight: 0.0
       deltaE_weight: 1.0
       disc_weight: 0.0
-      perceptual_weight: 1.0
-      threshold: 1000
+      perceptual_weight: 0.0
+      threshold: 0
   

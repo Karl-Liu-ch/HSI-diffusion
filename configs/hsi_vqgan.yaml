@@ -65,7 +65,7 @@ data:
         crop_size: 256
         valid_ratio: 0.1
         test_ratio: 0.1
-        aug: True
+        arg: True
         datanames: ['ARAD/']
     validation:
       target: taming.data.hsi_dataset.ValidDataset
@@ -74,5 +74,5 @@ data:
         crop_size: 256
         valid_ratio: 0.1
         test_ratio: 0.1
-        aug: True
+        arg: True
         datanames: ['ARAD/']
