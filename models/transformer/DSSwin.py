@@ -51,6 +51,12 @@ criterion_sam = Loss_SAM()
 criterion_sid = Loss_SID()
 criterion_fid = Loss_Fid().to(device)
 criterion_ssim = Loss_SSIM().to(device)
+
+def change_resolution(module, new_resolution):
+    new_resolution = tuple(new_resolution)
+    if isinstance(module, SwinTransformerBlock):
+        module.change_resolution(new_resolution)
+
 class Mlp(nn.Module):
     def __init__(self, in_features, hidden_features=None, out_features=None, act_layer=nn.GELU, drop=0.):
         super().__init__()
@@ -391,6 +397,35 @@ class SwinTransformerBlock(nn.Module):
         flops += self.dim * H * W
         return flops
 
+    def change_resolution(self, input_resolution):
+        self.input_resolution = input_resolution
+        if min(self.input_resolution) <= self.window_size:
+            # if window size is larger than input resolution, we don't partition windows
+            self.shift_size = 0
+            self.window_size = min(self.input_resolution)
+        if self.shift_size > 0:
+            # calculate attention mask for SW-MSA
+            H, W = self.input_resolution
+            img_mask = torch.zeros((1, H, W, 1))  # 1 H W 1
+            h_slices = (slice(0, -self.window_size),
+                        slice(-self.window_size, -self.shift_size),
+                        slice(-self.shift_size, None))
+            w_slices = (slice(0, -self.window_size),
+                        slice(-self.window_size, -self.shift_size),
+                        slice(-self.shift_size, None))
+            cnt = 0
+            for h in h_slices:
+                for w in w_slices:
+                    img_mask[:, h, w, :] = cnt
+                    cnt += 1
+
+            mask_windows = window_partition(img_mask, self.window_size)  # nW, window_size, window_size, 1
+            mask_windows = mask_windows.view(-1, self.window_size * self.window_size)
+            attn_mask = mask_windows.unsqueeze(1) - mask_windows.unsqueeze(2)
+            attn_mask = attn_mask.masked_fill(attn_mask != 0, float(-100.0)).masked_fill(attn_mask == 0, float(0.0))
+        else:
+            attn_mask = None
+
 class DSB(nn.Module):
     def __init__(self, dim, input_resolution, dim_head=31, window_size=8, num_blocks = 1):
         super().__init__()
@@ -404,11 +439,16 @@ class DSB(nn.Module):
         
     def forward(self, x):
         B, C, H, W = x.shape
-        assert H == self.input_resolution[0] and W == self.input_resolution[1]
+        if  H != self.input_resolution[0] or W != self.input_resolution[1]:
+            self.change_resolution(tuple([H, W]))
         x = rearrange(x, 'b c h w -> b (h w) c', h=H, w=W)
         x = self.model(x)
         x = rearrange(x, 'b (h w) c -> b c h w', h=H, w=W)
         return x
+    
+    def change_resolution(self, new_resolution):
+        self.input_resolution = new_resolution
+        self.model.apply(lambda module: change_resolution(module, new_resolution))
 
 class DownSample(nn.Module):
     def __init__(self, inchannel, outchannel):

@@ -29,5 +29,5 @@ params:
       deltaE_weight: 1.0
       disc_weight: 0.0
       perceptual_weight: 0.0
-      threshold: 0
+      threshold: 1000
   

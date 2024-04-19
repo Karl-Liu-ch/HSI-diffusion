@@ -212,12 +212,12 @@ class Loss(nn.Module):
         total_loss = disc_fake + disc_real - feature_loss * self.features_weight
         return total_loss * disc_factor
 
-    def forward(self, discriminator, reconstructions, labels, cond, optimizer_idx, global_step, last_layer = None):
-        if optimizer_idx == 0:
+    def forward(self, discriminator, reconstructions, labels, cond, global_step, mode, last_layer = None):
+        if mode == 'gen':
             total_loss = self.train_gen(discriminator, reconstructions, labels, cond, global_step, last_layer)
             return total_loss
         
-        if optimizer_idx == 1:
+        elif mode == 'dics':
             total_loss = self.train_disc(discriminator, reconstructions, labels, cond, global_step)
             return total_loss
         

@@ -199,16 +199,16 @@ class SN_Discriminator(nn.Module):
         super(SN_Discriminator, self).__init__()
         def SNConv(input_nums, output_nums):
             layer = [
-            SNConv2d(input_nums, output_nums, 4, 2, 1), 
-            nn.ReLU(True), 
+            # SNConv2d(input_nums, output_nums, 4, 2, 1), 
+            # nn.ReLU(True), 
             # SNConv2d(input_nums, output_nums, 3, 1, 1), 
             # nn.ReLU(True)
             ]
-            # layer = [
-            # nn.PixelUnshuffle(2),
-            # SNConv2d(input_nums * 4, output_nums, kernel_size=3, stride=1, padding=1), 
-            # nn.ReLU(True)
-            # ]
+            layer = [
+            nn.PixelUnshuffle(2),
+            SNConv2d(input_nums * 4, output_nums, kernel_size=3, stride=1, padding=1), 
+            nn.ReLU(True)
+            ]
             return layer
         
         self.Net = nn.Sequential(

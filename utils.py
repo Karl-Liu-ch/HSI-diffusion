@@ -62,6 +62,20 @@ class LossDeltaE(nn.Module):
         deltaE = deltaELoss(rgb_tensor, rgb_label)
         return deltaE
 
+def init_weights_normal(module):
+    if isinstance(module, nn.Linear) or isinstance(module, nn.Conv2d) or isinstance(module, nn.ConvTranspose2d):
+        nn.init.xavier_normal_(module.weight.data)
+        if module.bias is not None:
+            nn.init.constant_(module.bias.data, 0.0)
+        # print(f'init {module}')
+
+def init_weights_uniform(module):
+    if isinstance(module, nn.Linear) or isinstance(module, nn.Conv2d) or isinstance(module, nn.ConvTranspose2d):
+        nn.init.xavier_uniform_(module.weight.data)
+        if module.bias is not None:
+            nn.init.constant_(module.bias.data, 0.0)
+        # print(f'init {module}')
+
 def load_lightning2torch(ckpt_path, model, name = 'encoder'):
     name += '.'
     ckpt = torch.load(ckpt_path)

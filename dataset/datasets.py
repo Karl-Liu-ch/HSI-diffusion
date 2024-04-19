@@ -57,14 +57,16 @@ class GetDataset(Dataset):
     def __getitem__(self, idx):
         ex = {}
         bgr = self.rgb[idx]
-        rgb = np.copy(bgr)
-        rgb = Normalize(rgb)
+        rgb = (np.copy(bgr) / 255.0).astype(np.float32)
+        # rgb = Normalize(rgb)
         rgb = np.transpose(rgb, [2, 0, 1])
-        ycrcb = Normalize(cv2.cvtColor(bgr, cv2.COLOR_RGB2YCrCb))
-        bgr = Normalize(bgr)
+        # ycrcb = Normalize(cv2.cvtColor(bgr, cv2.COLOR_RGB2YCrCb))
+        ycrcb = (cv2.cvtColor(bgr, cv2.COLOR_RGB2YCrCb) / 240.0).astype(np.float32)
+        # bgr = Normalize(bgr)
+        bgr = (bgr / 255.0).astype(np.float32)
         bgr = np.concatenate([bgr, ycrcb], axis=2)
         hyper = self.hyper[idx]
-        hyper = Normalize(hyper)
+        # hyper = Normalize(hyper)
         bgr = np.transpose(bgr, [2, 0, 1])
         hyper = np.transpose(hyper, [2, 0, 1])
         rotTimes = random.randint(0, 3)
@@ -165,6 +167,20 @@ class TestDatasetclean(GetDataset):
             mat = scipy.io.loadmat(data_root+name)
             self.rgb.extend(mat['rgb'])
             self.hyper.extend(mat['cube'])
+
+class ValidFullDataset(GetDataset):
+    def __init__(self, data_root, crop_size, valid_ratio, test_ratio, arg=False, datanames = ['BGU/','ARAD/'], random_split = True):
+        super().__init__(data_root, crop_size, valid_ratio, test_ratio, arg=arg, datanames = datanames)
+        self.testset = []
+        for name in self.datanames:
+            if random_split:
+                self.testset.append(random_split_full_valid(data_root+ 'clean/' + name, valid_ratio= valid_ratio, test_ratio=test_ratio))
+            else:
+                self.testset.append(split_full_valid(data_root+ 'clean/' + name, valid_ratio= valid_ratio, test_ratio=test_ratio))
+        for testset in self.testset:
+            self.rgb.extend(testset[1])
+            self.hyper.extend(testset[0])
+        self.length = len(self.hyper)
 
 if __name__ == '__main__':
     testset = TestFullDataset(**trainconfig)

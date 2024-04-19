@@ -513,8 +513,8 @@ class DualTransformerEncoder(nn.Module):
                          input_resolution = [curr_res, curr_res], 
                          num_heads = block_in // ch, 
                          window_size = 8, 
-                         num_block = 1,
-                         num_msab=1)
+                         num_block = num_attn_blocks,
+                         num_msab=2)
             down = nn.Module()
             down.block = block
             down.attn = attn
@@ -530,8 +530,8 @@ class DualTransformerEncoder(nn.Module):
                          input_resolution = [curr_res, curr_res], 
                          num_heads = block_in // ch, 
                          window_size = 8, 
-                         num_block = 1,
-                         num_msab=1)
+                         num_block = num_attn_blocks,
+                         num_msab=2)
         # MSAB(dim=block_in, num_blocks=num_attn_blocks, dim_head=ch, heads=block_in // ch)
 
         # end
@@ -632,8 +632,8 @@ class DualTransformerDecoder(nn.Module):
                          input_resolution = [curr_res, curr_res], 
                          num_heads = block_in // ch, 
                          window_size = 8, 
-                         num_block = 1,
-                         num_msab=1)
+                         num_block = num_attn_blocks,
+                         num_msab=2)
         # MSAB(dim=block_in, num_blocks=num_attn_blocks, dim_head=ch, heads=block_in // ch)
 
         # upsampling
@@ -653,8 +653,8 @@ class DualTransformerDecoder(nn.Module):
                          input_resolution = [curr_res, curr_res], 
                          num_heads = block_out // ch, 
                          window_size = 8, 
-                         num_block = 1,
-                         num_msab=1)
+                         num_block = num_attn_blocks,
+                         num_msab=2)
             # MSAB(dim=block_in, num_blocks=num_attn_blocks, dim_head=ch, heads=block_in // ch)
             up = nn.Module()
             up.block = block
@@ -705,7 +705,7 @@ class DualTransformerDecoder(nn.Module):
         return h
 
 if __name__ == '__main__':
-    model = DualTransformerEncoder(ch=31, out_ch=31, resolution=128, num_attn_blocks=1, attn_resolutions=8, in_channels=31, z_channels=64).cuda()
+    model = DualTransformerEncoder(ch=31, out_ch=31, resolution=128, ch_mult=(1,2,4,4), num_attn_blocks=1, attn_resolutions=8, in_channels=31, z_channels=64).cuda()
     input = torch.rand([1, 31, 128, 128]).cuda()
     output = model(input)
     print(output.shape)

@@ -41,10 +41,10 @@ if __name__ == '__main__':
         except Exception as ex:
             print(ex)
     if opt.mode == 'train':
-        try:
-            model.load_checkpoint()
-        except Exception as ex:
-            print(ex)
+        # try:
+        #     model.load_checkpoint()
+        # except Exception as ex:
+        #     print(ex)
         model.train()
     elif opt.mode == 'test':
         model.load_checkpoint(best=True)

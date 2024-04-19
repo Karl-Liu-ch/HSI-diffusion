@@ -166,6 +166,31 @@ def split_full_test(path, valid_ratio, test_ratio):
     test_sets = get_full_dataset(path, testlist)
     return test_sets
 
+def split_full_valid(path, valid_ratio, test_ratio):
+    filelist = os.listdir(path)
+    filelist.sort()
+    reg = re.compile(r'.*.mat')
+    matlist = []
+    for file in filelist:
+        if re.match(reg, file):
+            matlist.append(file)
+    all_length = len(matlist)
+    test_size = int(all_length * test_ratio)
+    valid_size = int(all_length * valid_ratio)
+    train_size = all_length - test_size - valid_size
+    matlist.sort()
+    trainlist = []
+    validlist = []
+    testlist = []
+    for i in range(train_size):
+        trainlist.append(matlist[i])
+    for j in range(valid_size):
+        validlist.append(matlist[j + train_size])
+    for k in range(test_size):
+        testlist.append(matlist[k + train_size + valid_size])
+    valid_sets = get_full_dataset(path, validlist)
+    return valid_sets
+
 def split_valid(path, valid_ratio, test_ratio, imsize):
     filelist = os.listdir(path)
     filelist.sort()
@@ -268,7 +293,35 @@ def random_split_full_test(path, valid_ratio, test_ratio):
     for k in range(test_size):
         testlist.append(matlist[indices[k + train_size + valid_size]])
     test_sets = get_full_dataset(path, testlist)
+    print(indices[-1], all_length)
     return test_sets
+
+def random_split_full_valid(path, valid_ratio, test_ratio):
+    filelist = os.listdir(path)
+    filelist.sort()
+    reg = re.compile(r'.*.mat')
+    matlist = []
+    for file in filelist:
+        if re.match(reg, file):
+            matlist.append(file)
+    all_length = len(matlist)
+    test_size = int(all_length * test_ratio)
+    valid_size = int(all_length * valid_ratio)
+    train_size = all_length - test_size - valid_size
+    matlist.sort()
+    trainlist = []
+    validlist = []
+    testlist = []
+    indices = randperm(all_length, generator=generator).tolist()
+    for i in range(train_size):
+        trainlist.append(matlist[indices[i]])
+    for j in range(valid_size):
+        validlist.append(matlist[indices[j + train_size]])
+    for k in range(test_size):
+        testlist.append(matlist[indices[k + train_size + valid_size]])
+    valid_sets = get_full_dataset(path, validlist)
+    print(indices[-1], all_length)
+    return valid_sets
 
 def random_split_valid(path, valid_ratio, test_ratio, imsize):
     filelist = os.listdir(path)
@@ -296,13 +349,16 @@ def random_split_valid(path, valid_ratio, test_ratio, imsize):
     valid_sets = get_dataset(path, validlist, imsize)
     return valid_sets
 
-def get_all_mats(path, filelist, imsize):
+def get_all_mats(path, filelist, imsize, rescale = True):
     specs = []
     rgbs = []
     pbar = tqdm(filelist)
     for file in pbar:
         mat = scipy.io.loadmat(path+file)
-        spec, rgb = get_all_patches(mat, imsize)
+        if rescale:
+            spec, rgb = get_all_patches_with_rescale(mat, imsize)
+        else:
+            spec, rgb = get_all_patches(mat, imsize)
         specs += spec
         rgbs += rgb
         pbar.set_postfix({'File':file})
@@ -335,7 +391,33 @@ def data_resize(mat, imsize):
 def patch_gen(array, imsize, h, w):
     return array[h-imsize:h, w-imsize:w, :]
 
-def patch_image(array, imsize):
+def Im2Patch(img, imsize, stride=1):
+    patches = []
+    h, w, c = img.shape
+    h_num = (h - imsize) // stride + 1
+    w_num = (w - imsize) // stride + 1
+    h_last = (h - imsize) % stride
+    w_last = (w - imsize) % stride
+    for i in range(h_num):
+        start_h = i * stride
+        end_h = i * stride + imsize
+        for j in range(w_num):
+            patch = img[start_h:end_h,j * stride:j * stride + imsize, :]
+            patches.append(patch)
+            if j == w_num - 1 and w_last > 0:
+                patch = img[start_h:end_h, -imsize:, :]
+                patches.append(patch)
+        if i == h_num - 1 and h_last > 0:
+            start_h = -imsize
+            for j in range(w_num):
+                patch = img[start_h:,j * stride:j * stride + imsize, :]
+                patches.append(patch)
+                if j == w_num - 1 and w_last > 0:
+                    patch = img[start_h:, -imsize:, :]
+                    patches.append(patch)
+    return patches
+
+def patch_image(array, imsize, stride=8):
     h = array.shape[0]
     w = array.shape[1]
     assert h >= imsize
@@ -348,19 +430,33 @@ def patch_image(array, imsize):
             patches.append(patch_gen(array, imsize, min(h, i * imsize), min(w, j * imsize)))
     return patches
     
-def get_all_patches(mat, imsize):
+def get_all_patches_with_rescale(mat, imsize):
     spectrals = []
     rgbs = []
     resize_spectrals, resize_rgbs = data_resize(mat, imsize)
     for i in range(len(resize_spectrals)):
-        hyperpatches = patch_image(resize_spectrals[i], imsize)
-        rgbpatches = patch_image(resize_rgbs[i], imsize)
+        hyperpatches = Im2Patch(resize_spectrals[i], imsize, stride=imsize)
+        rgbpatches = Im2Patch(resize_rgbs[i], imsize, stride=imsize)
         spectrals += hyperpatches
         rgbs += rgbpatches
     return spectrals, rgbs
 
+def get_all_patches(mat, imsize, stride = 8):
+    spectrals = []
+    rgbs = []
+    # resize_spectrals, resize_rgbs = data_resize(mat, imsize)
+    # for i in range(len(resize_spectrals)):
+    hyper = np.float32(np.array(mat['cube']))
+    rgb = np.float32(np.array(mat['rgb']))
+    # hyperpatches = patch_image(hyper, imsize, stride)
+    # rgbpatches = patch_image(rgb, imsize, stride)
+    hyperpatches = Im2Patch(hyper, imsize, stride)
+    rgbpatches = Im2Patch(rgb, imsize, stride)
+    spectrals += hyperpatches
+    rgbs += rgbpatches
+    return spectrals, rgbs
+
 if __name__ == '__main__':
-    path = root + datanames[2]
-    train_sets = split_train(path, 15, 128)
-    print(len(train_sets[0]))
-    print(sys.getsizeof(train_sets[0])/1024/1024)
+    generator = torch.Generator().manual_seed(42)
+    indices = randperm(950, generator=generator).tolist()
+    print(indices[-1])

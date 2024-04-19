@@ -3,7 +3,7 @@ sys.path.append('./')
 import torch.nn as nn
 import torch
 import torch.optim as optim
-from dataset.datasets import TrainDataset, ValidDataset, TestDataset, TestFullDataset
+from dataset.datasets import TrainDataset, ValidDataset, TestDataset, TestFullDataset, ValidFullDataset
 import os
 from torch.utils.data import DataLoader
 from torch.autograd import Variable
@@ -111,7 +111,7 @@ class Gan():
         print("\nloading dataset ...")
         self.train_data = TrainDataset(data_root=self.data_root, crop_size=self.patch_size, valid_ratio = self.valid_ratio, test_ratio=self.test_ratio, datanames = self.datanames)
         print(f"Iteration per epoch: {len(self.train_data)}")
-        self.val_data = ValidDataset(data_root=self.data_root, crop_size=self.patch_size, valid_ratio = self.valid_ratio, test_ratio=self.test_ratio, datanames = self.datanames)
+        self.val_data = ValidFullDataset(data_root=self.data_root, crop_size=self.patch_size, valid_ratio = self.valid_ratio, test_ratio=self.test_ratio, datanames = self.datanames)
         print("Validation set samples: ", len(self.val_data))
         
     def get_last_layer(self):
@@ -145,7 +145,7 @@ class Gan():
             losses = AverageMeter()
             train_loader = DataLoader(dataset=self.train_data, batch_size=self.batch_size, shuffle=True, num_workers=32,
                                     pin_memory=True, drop_last=False)
-            val_loader = DataLoader(dataset=self.val_data, batch_size=self.batch_size, shuffle=False, num_workers=32, pin_memory=True)
+            val_loader = DataLoader(dataset=self.val_data, batch_size=1, shuffle=False, num_workers=32, pin_memory=True)
             pbar = tqdm(train_loader)
             for i, batch in enumerate(pbar):
                 labels = batch['label'].cuda()
@@ -163,13 +163,13 @@ class Gan():
                 # train G
                 self.optimG.zero_grad()
                 lrG = self.optimG.param_groups[0]['lr']
-                loss_G = self.loss(self.D, x_fake, labels, images, 0, self.iteration, last_layer = self.get_last_layer())
+                loss_G = self.loss(self.D, x_fake, labels, images, self.iteration, mode = 'gen', last_layer = self.get_last_layer())
                 loss_G.backward()
                 self.optimG.step()
                 
                 # train D
                 self.optimD.zero_grad()
-                loss_d = self.loss(self.D, x_fake, labels, images, 1, self.iteration, last_layer = self.get_last_layer())
+                loss_d = self.loss(self.D, x_fake, labels, images, self.iteration, mode = 'dics', last_layer = self.get_last_layer())
                 loss_d.backward()
                 self.optimD.step()
                 self.schedulerD.step()

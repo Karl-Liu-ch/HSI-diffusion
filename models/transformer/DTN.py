@@ -46,6 +46,11 @@ criterion_sid = Loss_SID()
 criterion_fid = Loss_Fid().to(device)
 criterion_ssim = Loss_SSIM().to(device)
 
+def change_resolution(module, new_resolution):
+    new_resolution = tuple(new_resolution)
+    if isinstance(module, SwinTransformerBlock_v2):
+        module.change_resolution(new_resolution)
+
 class SpatialGate(nn.Module):
     """ Spatial-Gate.
     Args:
@@ -115,11 +120,16 @@ class SWTB(nn.Module):
         
     def forward(self, x):
         B, C, H, W = x.shape
-        assert H == self.input_resolution[0] and W == self.input_resolution[1]
+        if  H != self.input_resolution[0] or W != self.input_resolution[1]:
+            self.change_resolution(tuple([H, W]))
         x = rearrange(x, 'b c h w -> b (h w) c', h=H, w=W)
         x = self.model(x)
         x = rearrange(x, 'b (h w) c -> b c h w', h=H, w=W)
         return x
+    
+    def change_resolution(self, new_resolution):
+        self.input_resolution = new_resolution
+        self.model.apply(lambda module: change_resolution(module, new_resolution))
 
 class Adaptive_SWTB(nn.Module):
     def __init__(self, dim=31, 
@@ -499,6 +509,13 @@ class DTN_multi_stage(nn.Module):
     def get_last_layer(self):
         return self.conv_out.weight
 
+def init_weights_uniform(module):
+    if isinstance(module, nn.Linear) or isinstance(module, nn.Conv2d) or isinstance(module, nn.ConvTranspose2d):
+        nn.init.xavier_uniform_(module.weight, 1.)
+        if module.bias is not None:
+            nn.init.constant_(module.bias, 0.0)
+        print(f'init {module}')
+
 if __name__ == '__main__':
     model = DTN(in_dim=3, 
                     out_dim=31,
@@ -506,6 +523,7 @@ if __name__ == '__main__':
                     window_size=8, 
                     n_block=[2,2,2,2], 
                     bottleblock = 4).to(device)
+    model.apply(init_weights_uniform)
     # model = DTN_multi_stage(in_channels=3, out_channels=31, n_feat=31, img_size=[128, 128], window=32).to(device)
     input = torch.rand([1, 3, 128, 128]).to(device)
     output = model(input.float())
