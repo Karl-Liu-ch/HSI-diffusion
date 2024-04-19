@@ -67,7 +67,7 @@ class Gan():
             self.D = nn.DataParallel(self.D)
         self.G.cuda()
         self.D.cuda()
-        summary(self.G, (6, 128, 128))
+        # summary(self.G, (6, 128, 128))
         self.noise = noise
         self.datanames = datanames
         self.epoch = 0
@@ -85,10 +85,8 @@ class Gan():
         self.loss_type = loss_type
         self.use_feature = use_feature
         
-        self.optimG = optim.Adam(self.G.parameters(), lr=learning_rate, betas=(0.9, 0.999))
-        # self.schedulerG = torch.optim.lr_scheduler.CosineAnnealingLR(self.optimG, self.end_epoch, eta_min=1e-6)
-        self.optimD = optim.Adam(self.D.parameters(), lr=learning_rate, betas=(0.9, 0.999))
-        # self.schedulerD = torch.optim.lr_scheduler.CosineAnnealingLR(self.optimD, self.end_epoch, eta_min=1e-6)
+        self.optimG = optim.Adam(self.G.parameters(), lr=learning_rate, betas=(0.5, 0.999))
+        self.optimD = optim.Adam(self.D.parameters(), lr=learning_rate, betas=(0.5, 0.999))
         self.root = ckpath
         self.writer = SummaryWriter(log_dir=self.root + 'runs/')
         if not os.path.exists(self.root):

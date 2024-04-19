@@ -356,7 +356,11 @@ class DTN(nn.Module):
         self.mapping = nn.Conv2d(dim, out_dim, 3, 1, 1, bias=False)
         
     def forward(self, x):
-        # Embedding
+        b, c, h_inp, w_inp = x.shape
+        pad_h = (self.min_window - h_inp % self.min_window) % self.min_window
+        pad_w = (self.min_window - w_inp % self.min_window) % self.min_window
+        x = F.pad(x, [0, pad_w, 0, pad_h], mode='reflect')
+
         fea = self.embedding(x)
         fea_in = fea.clone()
 
@@ -380,7 +384,7 @@ class DTN(nn.Module):
         out = self.mapping(fea) + fea_in
         # out = self.mapping(fea) + fea
 
-        return out
+        return out[:, :, :h_inp, :w_inp]
     
     def get_last_layer(self):
         return self.mapping.weight
