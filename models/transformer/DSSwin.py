@@ -24,7 +24,7 @@ from torchsummary import summary
 try:
     import os, sys
     sys.path.append('./')
-    from Models.kernels.window_process.window_process import WindowProcess, WindowProcessReverse
+    from models.kernels.window_process.window_process import WindowProcess, WindowProcessReverse
 
 except:
     WindowProcess = None
