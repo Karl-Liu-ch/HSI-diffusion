@@ -198,7 +198,8 @@ class Loss(nn.Module):
         else:
             perceptual_loss = 0
         total_loss = - disc_fake + rec_loss + feature_loss * self.features_weight * disc_factor + perceptual_loss
-        return total_loss
+        log = {'gen loss':-disc_fake, 'recon loss':rec_loss}
+        return total_loss, log
     
     def train_disc(self, discriminator, reconstructions, labels, cond, global_step):
         disc_factor = self.adopt_factor(global_step)
@@ -210,7 +211,8 @@ class Loss(nn.Module):
             for k in range(len(fake_features)):
                 feature_loss += F.mse_loss(real_features[k], fake_features[k])
         total_loss = disc_fake + disc_real - feature_loss * self.features_weight
-        return total_loss * disc_factor
+        log = {'real loss':disc_real, 'fake loss':disc_fake}
+        return total_loss * disc_factor, log
 
     def forward(self, discriminator, reconstructions, labels, cond, global_step, mode, last_layer = None):
         if mode == 'gen':
@@ -263,5 +265,6 @@ class LS_Loss(Loss):
         feature_loss = 0
         perceptual_loss = self.cal_perceptual_loss(reconstructions, labels) * self.perceptual_weight
         total_loss = - disc_fake + rec_loss + feature_loss * self.features_weight * disc_factor + perceptual_loss
-        return total_loss
+        log = {'gen loss':'%.9f'%(-disc_fake), 'recon loss': '%.9f'%rec_loss}
+        return total_loss, log
     

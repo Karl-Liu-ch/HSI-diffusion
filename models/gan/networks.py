@@ -17,6 +17,7 @@ import functools
 from models.gan.HSCNN_Plus import HSCNN_Plus
 from models.gan.SpectralNormalization import *
 from models.gan.attention import *
+from torchsummary import summary
 
 class UnetGenerator(nn.Module):
     def __init__(self, input_nc, output_nc, num_downs = 6, ngf=64, norm_layer=nn.BatchNorm2d, use_dropout=False, n_blocks = 0):
@@ -199,26 +200,32 @@ class SN_Discriminator(nn.Module):
         super(SN_Discriminator, self).__init__()
         def SNConv(input_nums, output_nums):
             layer = [
-            # SNConv2d(input_nums, output_nums, 4, 2, 1), 
-            # nn.ReLU(True), 
-            # SNConv2d(input_nums, output_nums, 3, 1, 1), 
+            SNConv2d(input_nums, input_nums, 4, 2, 1), 
+            # nn.LeakyReLU(0.1, True), 
+            nn.GELU(),
+            SNConv2d(input_nums, output_nums, 3, 1, 1), 
+            nn.GELU(),
             # nn.ReLU(True)
-            ]
-            layer = [
-            nn.PixelUnshuffle(2),
-            SNConv2d(input_nums * 4, output_nums, kernel_size=3, stride=1, padding=1), 
-            nn.ReLU(True)
             ]
             return layer
         
         self.Net = nn.Sequential(
             *SNConv(input_nums, 64),
-            *SNConv(64, 256),
+            *SNConv(64, 128),
+            *SNConv(128, 256),
             *SNConv(256, 512),
             SNConv2d(512, 1, 4, 1, 0),
             nn.AdaptiveAvgPool2d((1, 1)), 
             nn.Flatten(), 
+            # SNLinear(512, 1)
         )
+        self.apply(self._init_weights)
+    
+    def _init_weights(self, m):
+        if isinstance(m, nn.Linear) or isinstance(m, nn.Conv2d) or isinstance(m, nn.ConvTranspose2d):
+            nn.init.xavier_uniform_(m.weight.data, 1.)
+            if isinstance(m, nn.Linear) or isinstance(m, nn.Conv2d) or isinstance(m, nn.ConvTranspose2d) and m.bias is not None:
+                nn.init.constant_(m.bias.data, 0.0)
 
     def forward(self, input):
         output = self.Net(input)
@@ -252,6 +259,13 @@ class SN_Discriminator_perceptualLoss(nn.Module):
             # self.fc
             # nn.Sigmoid()
         )
+        self.apply(self._init_weights)
+    
+    def _init_weights(self, m):
+        if isinstance(m, nn.Linear) or isinstance(m, nn.Conv2d) or isinstance(m, nn.ConvTranspose2d):
+            nn.init.xavier_uniform_(m.weight.data, 1.)
+            if isinstance(m, nn.Linear) or isinstance(m, nn.Conv2d) or isinstance(m, nn.ConvTranspose2d) and m.bias is not None:
+                nn.init.constant_(m.bias.data, 0.0)
 
     def forward(self, input):
         h_relu1 = self.slice1(input)
@@ -347,6 +361,13 @@ class SN_NLayerDiscriminator(nn.Module):
 
         sequence += [SNConv2d(ndf * nf_mult, 1, kernel_size=kw, stride=1, padding=padw)]  # output 1 channel prediction map
         self.model = nn.Sequential(*sequence)
+        self.apply(self._init_weights)
+    
+    def _init_weights(self, m):
+        if isinstance(m, nn.Linear) or isinstance(m, nn.Conv2d) or isinstance(m, nn.ConvTranspose2d):
+            nn.init.xavier_uniform_(m.weight.data, 1.)
+            if isinstance(m, nn.Linear) or isinstance(m, nn.Conv2d) or isinstance(m, nn.ConvTranspose2d) and m.bias is not None:
+                nn.init.constant_(m.bias.data, 0.0)
 
     def forward(self, input):
         """Standard forward."""
@@ -377,6 +398,13 @@ class SNPixelDiscriminator(nn.Module):
         self.net += [SNConv2d(ndf * 2, 1, kernel_size=1, stride=1, padding=0, bias=True)]
 
         self.net = nn.Sequential(*self.net)
+        self.apply(self._init_weights)
+    
+    def _init_weights(self, m):
+        if isinstance(m, nn.Linear) or isinstance(m, nn.Conv2d) or isinstance(m, nn.ConvTranspose2d):
+            nn.init.xavier_uniform_(m.weight.data, 1.)
+            if isinstance(m, nn.Linear) or isinstance(m, nn.Conv2d) or isinstance(m, nn.ConvTranspose2d) and m.bias is not None:
+                nn.init.constant_(m.bias.data, 0.0)
 
     def forward(self, input):
         """Standard forward."""
@@ -468,6 +496,13 @@ class SNResnetDiscriminator(nn.Module):
                     nn.Flatten(),
                     ]
         self.Net = nn.Sequential(*model)
+        self.apply(self._init_weights)
+    
+    def _init_weights(self, m):
+        if isinstance(m, nn.Linear) or isinstance(m, nn.Conv2d) or isinstance(m, nn.ConvTranspose2d):
+            nn.init.xavier_uniform_(m.weight.data, 1.)
+            if isinstance(m, nn.Linear) or isinstance(m, nn.Conv2d) or isinstance(m, nn.ConvTranspose2d) and m.bias is not None:
+                nn.init.constant_(m.bias.data, 0.0)
 
     def forward(self, input):
         output = self.Net(input)
@@ -497,6 +532,13 @@ class SNResnetDiscriminator_perceptualLoss(nn.Module):
                         nn.AdaptiveAvgPool2d((1, 1)), 
                         nn.Flatten(), 
                         )
+        self.apply(self._init_weights)
+    
+    def _init_weights(self, m):
+        if isinstance(m, nn.Linear) or isinstance(m, nn.Conv2d) or isinstance(m, nn.ConvTranspose2d):
+            nn.init.xavier_uniform_(m.weight.data, 1.)
+            if isinstance(m, nn.Linear) or isinstance(m, nn.Conv2d) or isinstance(m, nn.ConvTranspose2d) and m.bias is not None:
+                nn.init.constant_(m.bias.data, 0.0)
 
     def forward(self, input):
         output = self.layer1(input)
@@ -515,7 +557,7 @@ class SNTransformDiscriminator_perceptual(nn.Module):
             layer = []
             layer += [SN_MSAB(input_nums, dim, input_nums // dim, n_blocks)]
             layer.append(SNConv2d(input_nums, output_nums, kernel_size=(3, 3), stride=(2, 2), padding=(1, 1)))
-            layer.append(nn.ReLU(True))
+            layer.append(nn.GELU())
             return layer
         
         self.layer1 = SNConv2d(input_nums, input_nums, kernel_size=1, stride=1, padding=0)
@@ -531,6 +573,16 @@ class SNTransformDiscriminator_perceptual(nn.Module):
                         nn.AdaptiveAvgPool2d((1, 1)), 
                         nn.Flatten()
                         )
+        self.apply(self._init_weights)
+    
+    def _init_weights(self, m):
+        if isinstance(m, nn.Linear) or isinstance(m, nn.Conv2d) or isinstance(m, nn.ConvTranspose2d):
+            nn.init.xavier_uniform_(m.weight.data, 1.)
+            if isinstance(m, nn.Linear) or isinstance(m, nn.Conv2d) or isinstance(m, nn.ConvTranspose2d) and m.bias is not None:
+                nn.init.constant_(m.bias.data, 0.0)
+        elif isinstance(m, nn.LayerNorm):
+            nn.init.constant_(m.bias, 0)
+            nn.init.constant_(m.weight, 1.0)
 
     def forward(self, input):
         output = self.layer1(input)
@@ -548,11 +600,11 @@ class SNTransformDiscriminator(nn.Module):
         def ResBlock(dim, input_nums, output_nums, n_blocks = 1):
             layer = []
             layer += [SN_MSAB(input_nums, dim, input_nums // dim, n_blocks)]
-            layer.append(SNConv2d(input_nums, output_nums, kernel_size=(3, 3), stride=(2, 2), padding=(1, 1)))
-            layer.append(nn.ReLU(True))
+            layer.append(SNConv2d(input_nums, output_nums, kernel_size=(4, 4), stride=(2, 2), padding=(1, 1)))
+            layer.append(nn.GELU())
             return layer
         
-        model = []
+        model = [SNConv2d(input_nums, input_nums, kernel_size=3, stride=1, padding=1)]
         model += ResBlock(input_nums, input_nums,  input_nums, n_blocks=n_block)
         new_ch = input_nums
         for i in range(n_layer):
@@ -565,6 +617,16 @@ class SNTransformDiscriminator(nn.Module):
                     nn.Flatten(),
                     ]
         self.Net = nn.Sequential(*model)
+        self.apply(self._init_weights)
+    
+    def _init_weights(self, m):
+        if isinstance(m, nn.Linear) or isinstance(m, nn.Conv2d) or isinstance(m, nn.ConvTranspose2d):
+            nn.init.xavier_uniform_(m.weight.data, 1.)
+            if m.bias is not None:
+                nn.init.constant_(m.bias.data, 0.0)
+        elif isinstance(m, nn.LayerNorm):
+            nn.init.constant_(m.bias, 0)
+            nn.init.constant_(m.weight, 1.0)
 
     def forward(self, x):
         return self.Net(x).mean(0).view(1)
@@ -646,13 +708,12 @@ class DensenetGenerator(nn.Module):
 class Spectral_Discriminator(nn.Module):
     def __init__(self):
         super().__init__()
-        
-
+       
 if __name__ == '__main__':
-    model = SN_Discriminator_perceptualLoss(34)
-    model = model.cuda()
-    
-    input = torch.rand([1, 34, 128, 128])
-    input = input.cuda()
-    output, features = model(input)
-    print(output.shape, len(features))
+    model = wgan_Discriminator(34)
+    # summary(model, (34, 128, 128))
+    print(model)
+    # input = torch.rand([1, 34, 128, 128])
+    # input = input.cuda()
+    # output, features = model(input)
+    # print(output.shape, len(features))

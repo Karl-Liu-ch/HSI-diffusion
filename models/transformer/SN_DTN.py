@@ -53,6 +53,11 @@ criterion_sid = Loss_SID()
 criterion_fid = Loss_Fid().to(device)
 criterion_ssim = Loss_SSIM().to(device)
 
+def change_resolution(module, new_resolution):
+    new_resolution = tuple(new_resolution)
+    if isinstance(module, SN_SwinTransformerBlock):
+        module.change_resolution(new_resolution)
+
 class SpatialGate(nn.Module):
     """ Spatial-Gate.
     Args:
@@ -119,14 +124,26 @@ class SWTB(nn.Module):
             SN_SwinTransformerBlock(dim=dim, input_resolution=input_resolution, num_heads=num_heads, window_size=window_size, shift_size=window_size // 2)
         )
         # agent swin for later
+        self.apply(self._init_weights)
+    
+    def _init_weights(self, m):
+        if isinstance(m, nn.Linear):
+            nn.init.xavier_uniform_(m.weight, gain=1.)
+            if m.bias is not None:
+                nn.init.constant_(m.bias, 0)
         
     def forward(self, x):
         B, C, H, W = x.shape
-        assert H == self.input_resolution[0] and W == self.input_resolution[1]
+        if  H != self.input_resolution[0] or W != self.input_resolution[1]:
+            self.change_resolution(tuple([H, W]))
         x = rearrange(x, 'b c h w -> b (h w) c', h=H, w=W)
         x = self.model(x)
         x = rearrange(x, 'b (h w) c -> b c h w', h=H, w=W)
         return x
+    
+    def change_resolution(self, new_resolution):
+        self.input_resolution = new_resolution
+        self.model.apply(lambda module: change_resolution(module, new_resolution))
 
 class DWConv(nn.Module):
     def __init__(self, 
@@ -207,9 +224,6 @@ class Adaptive_SWTB(nn.Module):
         convx = self.dwconv(x)
         pool = torch.concat([self.avgpool(convx), self.maxpool(convx)], dim = 1)
 
-        # channelinter = F.softmax(self.channel_interaction(pool), dim = 1)
-        # spatialinter = F.softmax(self.spatial_interaction(convx).view(B, 1, H*W), dim=-1).view(B, 1, H, W)
-
         channelinter = torch.sigmoid(self.channel_interaction(pool))
         spatialinter = torch.sigmoid(self.spatial_interaction(convx))
         
@@ -217,10 +231,10 @@ class Adaptive_SWTB(nn.Module):
         spatialx = convx * spatialinter
         out = self.proj(rearrange(channelx, 'b c h w -> b (h w) c') + rearrange(spatialx, 'b c h w -> b (h w) c'))
         out = rearrange(out, 'b (h w) c -> b c h w', h = H, w = W)
-        out += x_in
+        out = x_in + out
         ff = self.norm2(rearrange(out.clone(), 'b c h w -> b (h w) c'))
         ff = self.ffn(ff, H, W)
-        out += rearrange(ff, 'b (h w) c -> b c h w', h = H, w = W)
+        out = rearrange(ff, 'b (h w) c -> b c h w', h = H, w = W) + out
         return out
 
 class Adaptive_MSAB(nn.Module):
@@ -252,9 +266,6 @@ class Adaptive_MSAB(nn.Module):
         convx = self.dwconv(x)
         pool = torch.concat([self.avgpool(convx), self.maxpool(convx)], dim = 1)
 
-        # channelinter = F.softmax(self.channel_interaction(pool), dim = 1)
-        # spatialinter = F.softmax(self.spatial_interaction(convx).view(B, 1, H*W), dim=-1).view(B, 1, H, W)
-
         channelinter = torch.sigmoid(self.channel_interaction(pool))
         spatialinter = torch.sigmoid(self.spatial_interaction(convx))
 
@@ -262,10 +273,10 @@ class Adaptive_MSAB(nn.Module):
         spatialx = attnx * spatialinter
         out = self.proj(rearrange(channelx, 'b c h w -> b (h w) c') + rearrange(spatialx, 'b c h w -> b (h w) c'))
         out = rearrange(out, 'b (h w) c -> b c h w', h = H, w = W)
-        out += x_in
+        out = x_in + out
         ff = self.norm2(rearrange(out.clone(), 'b c h w -> b (h w) c'))
         ff = self.ffn(ff, H, W)
-        out += rearrange(ff, 'b (h w) c -> b c h w', h = H, w = W)
+        out = rearrange(ff, 'b (h w) c -> b c h w', h = H, w = W) + out
         return out
 
 class DTNBlock(nn.Module):
@@ -290,8 +301,8 @@ class DownSample(nn.Module):
         super().__init__()
         self.model = nn.Sequential(
             SNConv2d(inchannel, outchannel, kernel_size=4, stride=2, padding=1, bias=False),
-            # nn.BatchNorm2d(outchannel), 
-            # nn.ReLU(True)
+            # nn.LeakyReLU(0.1, True), 
+            nn.GELU()
         )
         
     def forward(self, x):
@@ -301,8 +312,8 @@ class UpSample(nn.Module):
         super().__init__()
         self.model = nn.Sequential(
             SNConvTranspose2d(inchannel, outchannel, kernel_size=4, stride=2, padding=1, bias=False),
-            # nn.BatchNorm2d(outchannel), 
-            # nn.ReLU(True)
+            # nn.LeakyReLU(0.1, True), 
+            nn.GELU()
         )
         
     def forward(self, x):
@@ -320,6 +331,9 @@ class SN_DTN(nn.Module):
                  n_block=[2,2,2,2], 
                  bottleblock = 4):
         super().__init__()
+        self.min_window = window_size * 2 ** len(n_block)
+        img_size[0] = (self.min_window - img_size[0] % self.min_window) % self.min_window + img_size[0]
+        img_size[1] = (self.min_window - img_size[1] % self.min_window) % self.min_window + img_size[1]
         dim = out_dim
         self.embedding = SNConv2d(in_dim, dim, 3, 1, 1, bias=False)
         self.stage = len(n_block)-1
@@ -366,9 +380,23 @@ class SN_DTN(nn.Module):
             dim_stage //= 2
         
         self.mapping = SNConv2d(dim, out_dim, 3, 1, 1, bias=False)
+        self.apply(self._init_weights)
+    
+    def _init_weights(self, m):
+        if isinstance(m, nn.Linear) or isinstance(m, nn.Conv2d) or isinstance(m, nn.ConvTranspose2d):
+            nn.init.xavier_uniform_(m.weight, gain=1.)
+            if isinstance(m, nn.Linear) and m.bias is not None:
+                nn.init.constant_(m.bias, 0)
+        elif isinstance(m, nn.LayerNorm):
+            nn.init.constant_(m.bias, 0)
+            nn.init.constant_(m.weight, 1.0)
         
     def forward(self, x):
-        # Embedding
+        b, c, h_inp, w_inp = x.shape
+        pad_h = (self.min_window - h_inp % self.min_window) % self.min_window
+        pad_w = (self.min_window - w_inp % self.min_window) % self.min_window
+        x = F.pad(x, [0, pad_w, 0, pad_h], mode='reflect')
+
         fea = self.embedding(x)
         fea_in = fea.clone()
 
@@ -392,7 +420,7 @@ class SN_DTN(nn.Module):
         out = self.mapping(fea) + fea_in
         # out = self.mapping(fea) + fea
 
-        return out
+        return out[:, :, :h_inp, :w_inp]
     
     def get_last_layer(self):
         return self.mapping.convout.weight_orig
@@ -523,15 +551,15 @@ class TrainDTN(BaseModel):
 
 
 if __name__ == '__main__':
-    b = 24
-    model = SN_DTN(in_channels=6, out_channels=31, n_feat=31, stage=3, img_size=[128, 128]).to(device)
-    input = torch.rand([b, 6, 128, 128]).to(device)
-    label = torch.rand([b, 31, 128, 128]).to(device)
+    b = 1
+    model = SN_DTN(in_dim=6, out_dim=31, img_size=[128, 128]).to(device)
+    input = torch.randn([b, 6, 128, 128]).to(device)
+    label = torch.randn([b, 31, 128, 128]).to(device)
     # model = SNConv2d(3, 31, 3, 1, 1)
-    output = model(input.float())
+    output = model(input)
     loss = F.l1_loss(output, label)
     print(output.shape)
-    print(torch.autograd.grad(loss, model.conv_out.convout.weight_orig, retain_graph=True)[0])
+    # print(torch.autograd.grad(loss, model.conv_out.convout.weight_orig, retain_graph=True)[0])
     # spec = TrainDTN(opt, model, model_name='DTN')
     # if opt.loadmodel:
     #     try:

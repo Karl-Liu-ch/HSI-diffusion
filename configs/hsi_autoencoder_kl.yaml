@@ -74,10 +74,10 @@ model:
 data:
   target: dataset.base.DataModuleFromConfig
   params:
-    batch_size: 1
+    batch_size: 8
     num_workers: 32
     train:
-      target: dataset.datasets.TrainDataset
+      target: dataset.datasets.Train_Dataset
       params:
         data_root: /work3/s212645/Spectral_Reconstruction/
         crop_size: 256
@@ -86,7 +86,7 @@ data:
         aug: True
         datanames: ['ARAD/']
     validation:
-      target: dataset.datasets.ValidDataset
+      target: dataset.datasets.Valid_Dataset
       params:
         data_root: /work3/s212645/Spectral_Reconstruction/
         crop_size: 256

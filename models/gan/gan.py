@@ -3,7 +3,7 @@ sys.path.append('./')
 import torch.nn as nn
 import torch
 import torch.optim as optim
-from dataset.datasets import TrainDataset, ValidDataset, TestDataset, TestFullDataset, ValidFullDataset
+from dataset.datasets import *
 import os
 from torch.utils.data import DataLoader
 from torch.autograd import Variable
@@ -11,6 +11,7 @@ from models.gan.networks import *
 from torch.utils.tensorboard import SummaryWriter
 from tqdm import tqdm
 from torchsummary import summary
+import shutil
 # from models.transformer import MST_Plus_Plus, DTN
 from utils import *
 os.environ["CUDA_DEVICE_ORDER"] = 'PCI_BUS_ID'
@@ -52,22 +53,27 @@ class Gan():
                  loss_type = 'wasserstein',
                  valid_ratio = 0.1, 
                  test_ratio = 0.1,
+                 n_critic = 5,
                  multigpu = False, 
                  noise = False, 
                  use_feature = True, **kargs):
         super().__init__()
+        self.earlystop = EarlyStopper(patience=5, min_delta=1e-2, start_epoch=40, gl_weight=1.2)
+        self.n_critic = n_critic
         self.multiGPU = multigpu
         self.valid_ratio = valid_ratio
         self.test_ratio = test_ratio
         self.G = instantiate_from_config(genconfig)
         self.D = instantiate_from_config(disconfig)
         self.loss = instantiate_from_config(lossconfig)
+        self.G.apply(init_weights_uniform)
         if self.multiGPU:
             self.G = nn.DataParallel(self.G)
             self.D = nn.DataParallel(self.D)
         self.G.cuda()
         self.D.cuda()
-        # summary(self.G, (6, 128, 128))
+        summary(self.G, (6, 128, 128))
+        summary(self.D, (37, 128, 128))
         self.noise = noise
         self.datanames = datanames
         self.epoch = 0
@@ -79,15 +85,21 @@ class Gan():
         self.data_root = data_root
         self.patch_size = patch_size
         self.batch_size = batch_size
+        self.top_k = 3
         
         self.lossl1 = criterion_mrae
-        self.loss_min = None
+        self.loss_min = np.ones([self.top_k]) * 1000
         self.loss_type = loss_type
         self.use_feature = use_feature
         
-        self.optimG = optim.Adam(self.G.parameters(), lr=learning_rate, betas=(0.5, 0.999))
-        self.optimD = optim.Adam(self.D.parameters(), lr=learning_rate, betas=(0.5, 0.999))
+        self.optimG = optim.Adam(self.G.parameters(), lr=learning_rate, betas=(0.5, 0.9), eps=1e-14)
+        self.optimD = optim.Adam(self.D.parameters(), lr=learning_rate, betas=(0.5, 0.9), eps=1e-12)
+        # self.optimG = optim.RMSprop(self.G.parameters(), lr=1e-5, alpha=0.9, eps=1e-14)
+        # self.optimD = optim.RMSprop(self.D.parameters(), lr=1e-5, alpha=0.9, eps=1e-12)
         self.root = ckpath
+        if not opt.resume:
+            shutil.rmtree(self.root + 'runs/', ignore_errors=True)
+            # os.rmdir(self.root + 'runs/')
         self.writer = SummaryWriter(log_dir=self.root + 'runs/')
         if not os.path.exists(self.root):
             os.makedirs(self.root)
@@ -107,9 +119,9 @@ class Gan():
     def load_dataset(self):
         # load dataset
         print("\nloading dataset ...")
-        self.train_data = TrainDataset(data_root=self.data_root, crop_size=self.patch_size, valid_ratio = self.valid_ratio, test_ratio=self.test_ratio, datanames = self.datanames)
+        self.train_data = Train_Dataset(data_root=self.data_root, crop_size=self.patch_size, valid_ratio = self.valid_ratio, test_ratio=self.test_ratio, datanames = self.datanames, stride=128)
         print(f"Iteration per epoch: {len(self.train_data)}")
-        self.val_data = ValidFullDataset(data_root=self.data_root, crop_size=self.patch_size, valid_ratio = self.valid_ratio, test_ratio=self.test_ratio, datanames = self.datanames)
+        self.val_data = Valid_Dataset(data_root=self.data_root, crop_size=512, valid_ratio = self.valid_ratio, test_ratio=self.test_ratio, datanames = self.datanames)
         print("Validation set samples: ", len(self.val_data))
         
     def get_last_layer(self):
@@ -143,7 +155,10 @@ class Gan():
             losses = AverageMeter()
             train_loader = DataLoader(dataset=self.train_data, batch_size=self.batch_size, shuffle=True, num_workers=32,
                                     pin_memory=True, drop_last=False)
-            val_loader = DataLoader(dataset=self.val_data, batch_size=1, shuffle=False, num_workers=32, pin_memory=True)
+            if len(self.val_data) > 95:
+                val_loader = DataLoader(dataset=self.val_data, batch_size=self.batch_size, shuffle=False, num_workers=32, pin_memory=True)
+            else:
+                val_loader = DataLoader(dataset=self.val_data, batch_size=1, shuffle=False, num_workers=32, pin_memory=True)
             pbar = tqdm(train_loader)
             for i, batch in enumerate(pbar):
                 labels = batch['label'].cuda()
@@ -156,18 +171,19 @@ class Gan():
                     z = Variable(z)
                 else:
                     z = images
-                x_fake = self.G(z)
                 
                 # train G
-                self.optimG.zero_grad()
-                lrG = self.optimG.param_groups[0]['lr']
-                loss_G = self.loss(self.D, x_fake, labels, images, self.iteration, mode = 'gen', last_layer = self.get_last_layer())
-                loss_G.backward()
-                self.optimG.step()
+                for _ in range(self.n_critic):
+                    x_fake = self.G(z)
+                    self.optimG.zero_grad()
+                    lrG = self.optimG.param_groups[0]['lr']
+                    loss_G, log_g = self.loss(self.D, x_fake, labels, images, self.iteration, mode = 'gen', last_layer = self.get_last_layer())
+                    loss_G.backward()
+                    self.optimG.step()
                 
                 # train D
                 self.optimD.zero_grad()
-                loss_d = self.loss(self.D, x_fake, labels, images, self.iteration, mode = 'dics', last_layer = self.get_last_layer())
+                loss_d, log_d = self.loss(self.D, x_fake, labels, images, self.iteration, mode = 'dics', last_layer = self.get_last_layer())
                 loss_d.backward()
                 self.optimD.step()
                 self.schedulerD.step()
@@ -179,9 +195,37 @@ class Gan():
                 self.writer.add_scalar("lr/train", lrG, self.iteration)
                 self.writer.add_scalar("loss_G/train", loss_G, self.iteration)
                 self.writer.add_scalar("loss_D/train", loss_d, self.iteration)
+                self.writer.add_scalar("gen loss/train", log_g['gen loss'], self.iteration)
+                self.writer.add_scalar("disc loss real/train", log_d['real loss'], self.iteration)
+                self.writer.add_scalar("disc loss fake/train", log_d['fake loss'], self.iteration)
                 self.iteration = self.iteration+1
                 logs = {'epoch':self.epoch, 'iter':self.iteration, 'lr':'%.9f'%lrG, 'train_losses':'%.9f'%(losses.avg), 'G_loss':'%.9f'%(loss_G), 'D_loss':'%.9f'%(loss_d)}
                 pbar.set_postfix(logs)
+                # if self.iteration % 2000 == 0:
+                #     # validation
+                #     mrae_loss, rmse_loss, psnr_loss, sam_loss, sid_loss = self.validate(val_loader)
+                #     print(f'MRAE:{mrae_loss}, RMSE: {rmse_loss}, PNSR:{psnr_loss}, SAM: {sam_loss}, SID: {sid_loss}')
+                #     self.writer.add_scalar("MRAE/val", mrae_loss, self.epoch)
+                #     self.writer.add_scalar("RMSE/val", rmse_loss, self.epoch)
+                #     self.writer.add_scalar("PNSR/val", psnr_loss, self.epoch)
+                #     self.writer.add_scalar("SAM/val", sam_loss, self.epoch)
+                #     # Save model
+                #     print(f'Saving to {self.root}')
+                #     self.save_checkpoint()
+                #     if mrae_loss < self.best_mrae:
+                #         self.best_mrae = mrae_loss
+                #         self.save_checkpoint(True)
+                #     save_top, top_n = self.save_top_k(mrae_loss.detach().cpu().numpy())
+                #     if save_top:
+                #         self.save_checkpoint(top_k=top_n)
+                #     print(" Iter[%06d], Epoch[%06d], learning rate : %.9f, Train MRAE: %.9f, Test MRAE: %.9f, "
+                #         "Test RMSE: %.9f, Test PSNR: %.9f, SAM: %.9f, SID: %.9f " % (self.iteration, 
+                #                                                         self.epoch, lrG, 
+                #                                                         losses.avg, mrae_loss, rmse_loss, psnr_loss, sam_loss, sid_loss))
+                #     if self.earlystop.early_stop(mrae_loss, losses.avg, self.epoch):
+                #         break
+                #     if mrae_loss > 100.0: 
+                #         break
             # validation
             mrae_loss, rmse_loss, psnr_loss, sam_loss, sid_loss = self.validate(val_loader)
             print(f'MRAE:{mrae_loss}, RMSE: {rmse_loss}, PNSR:{psnr_loss}, SAM: {sam_loss}, SID: {sid_loss}')
@@ -195,13 +239,18 @@ class Gan():
             if mrae_loss < self.best_mrae:
                 self.best_mrae = mrae_loss
                 self.save_checkpoint(True)
+            save_top, top_n = self.save_top_k(mrae_loss.detach().cpu().numpy())
+            if save_top:
+                self.save_checkpoint(top_k=top_n)
             print(" Iter[%06d], Epoch[%06d], learning rate : %.9f, Train MRAE: %.9f, Test MRAE: %.9f, "
                 "Test RMSE: %.9f, Test PSNR: %.9f, SAM: %.9f, SID: %.9f " % (self.iteration, 
                                                                 self.epoch, lrG, 
                                                                 losses.avg, mrae_loss, rmse_loss, psnr_loss, sam_loss, sid_loss))
-            self.epoch += 1
+            if self.earlystop.early_stop(mrae_loss, losses.avg, self.epoch):
+                break
             if mrae_loss > 100.0: 
                 break
+            self.epoch += 1
 
     def hsi2rgb(self, hsi):
         rgb = self.loss.deltaELoss.model_hs2rgb(hsi)

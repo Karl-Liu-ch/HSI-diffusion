@@ -36,7 +36,7 @@ source ./miniconda3/bin/activate
 conda activate pytorch
 cd /zhome/02/b/164706/Master_Courses/thesis/HSI-diffusion/
 export PYTHONUNBUFFERED=1
-python -u train.py -c configs/dtn_sndisc.yaml --gpu_id 0 --batch_size 40 --mode train
+python -u train.py -c configs/dtn_sndisc.yaml --gpu_id 0 --batch_size 32 --mode train -r
 # python -u train.py -c configs/msdtn_sndisc.yaml --gpu_id 0 --batch_size 16 --mode train
 # python -u models/gan/swin-gan.py --gpu_id 0 --batch_size 40 --G DTN --mode train
 # python -u models/gan/swin-gan.py --gpu_id 0 --batch_size 16 --G DTN --mode train

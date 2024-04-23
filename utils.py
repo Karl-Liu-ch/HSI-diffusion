@@ -19,6 +19,8 @@ import importlib
 from omegaconf import OmegaConf
 from differential_color_functions import *
 from guided_filter import *
+import math
+import warnings
 device = 'cuda' if torch.cuda.is_available() else 'cpu'
 rgbfilterpath = 'resources/RGB_Camera_QE.csv'
 camera_filter, filterbands = load_rgb_filter(rgbfilterpath)
@@ -32,7 +34,31 @@ for i in index:
     count += 1
 CAM_FILTER = cam_filter.astype(np.float32)
 
-def deltaELoss(fake, gt, filter = GuidedFilter(radius=5, eps = 0.1)):
+class EarlyStopper:
+    def __init__(self, patience=1, min_delta=0, start_epoch = 20, gl_weight = 1.2):
+        self.patience = patience
+        self.min_delta = min_delta
+        self.counter = 0
+        self.min_validation_loss = float('inf')
+        self.start_epoch = start_epoch
+        self.gl_weight = gl_weight
+
+    def early_stop(self, validation_loss, train_loss, epoch):
+        if ((validation_loss / train_loss) > self.gl_weight) and (epoch > self.start_epoch):
+            return True
+        if epoch < self.start_epoch or (train_loss / validation_loss) > 1.0:
+            return False
+        else:
+            if validation_loss < self.min_validation_loss:
+                self.min_validation_loss = validation_loss
+                self.counter = 0
+            elif validation_loss > (self.min_validation_loss + self.min_delta):
+                self.counter += 1
+                if self.counter >= self.patience:
+                    return True
+            return False
+    
+def deltaELoss(fake, gt):
     # fake = filter(fake, fake)
     # gt = filter(gt, gt)
     loss = ciede2000_diff(rgb2lab_diff(gt, device), rgb2lab_diff(fake, device), device)
@@ -62,19 +88,38 @@ class LossDeltaE(nn.Module):
         deltaE = deltaELoss(rgb_tensor, rgb_label)
         return deltaE
 
-def init_weights_normal(module):
-    if isinstance(module, nn.Linear) or isinstance(module, nn.Conv2d) or isinstance(module, nn.ConvTranspose2d):
-        nn.init.xavier_normal_(module.weight.data)
-        if module.bias is not None:
-            nn.init.constant_(module.bias.data, 0.0)
-        # print(f'init {module}')
+def _no_grad_trunc_normal_(tensor, mean, std, a, b):
+    def norm_cdf(x):
+        return (1. + math.erf(x / math.sqrt(2.))) / 2.
 
-def init_weights_uniform(module):
-    if isinstance(module, nn.Linear) or isinstance(module, nn.Conv2d) or isinstance(module, nn.ConvTranspose2d):
-        nn.init.xavier_uniform_(module.weight.data)
+    if (mean < a - 2 * std) or (mean > b + 2 * std):
+        warnings.warn("mean is more than 2 std from [a, b] in nn.init.trunc_normal_. "
+                      "The distribution of values may be incorrect.",
+                      stacklevel=2)
+    with torch.no_grad():
+        l = norm_cdf((a - mean) / std)
+        u = norm_cdf((b - mean) / std)
+        tensor.uniform_(2 * l - 1, 2 * u - 1)
+        tensor.erfinv_()
+        tensor.mul_(std * math.sqrt(2.))
+        tensor.add_(mean)
+        tensor.clamp_(min=a, max=b)
+        return tensor
+
+def trunc_normal_(tensor, mean=0., std=1., a=-2., b=2.):
+    return _no_grad_trunc_normal_(tensor, mean, std, a, b)
+
+def init_weights_normal(module, init_gain = 0.02):
+    if isinstance(module, nn.Conv2d) or isinstance(module, nn.ConvTranspose2d):
+        nn.init.xavier_normal_(module.weight.data, init_gain)
         if module.bias is not None:
             nn.init.constant_(module.bias.data, 0.0)
-        # print(f'init {module}')
+
+def init_weights_uniform(module, init_gain = 0.02):
+    if isinstance(module, nn.Conv2d) or isinstance(module, nn.ConvTranspose2d):
+        nn.init.xavier_uniform_(module.weight.data, init_gain)
+        if module.bias is not None:
+            nn.init.constant_(module.bias.data, 0.0)
 
 def load_lightning2torch(ckpt_path, model, name = 'encoder'):
     name += '.'

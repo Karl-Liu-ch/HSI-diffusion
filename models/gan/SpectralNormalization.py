@@ -22,8 +22,9 @@ class SNLinear(nn.Module):
         self.linear = nn.Linear(in_features=in_features,
                                 out_features=out_features, 
                                 bias=True)
-        nn.init.xavier_uniform_(self.linear.weight.data, 1.)
-        nn.init.constant_(self.linear.bias.data, 0.0)
+        # nn.init.xavier_uniform_(self.linear.weight.data, 1.)
+        # if bias:
+        #     nn.init.constant_(self.linear.bias.data, 0.0)
         self.linear = nn.utils.spectral_norm(self.linear)
     
     def forward(self, x):
@@ -47,8 +48,9 @@ class SNConv2d(nn.Module):
         super().__init__()
         self.conv = nn.Conv2d(in_channels, out_channels, kernel_size=kernel_size, stride=stride, padding=padding, 
         dilation = 1, groups = 1, bias=bias)
-        nn.init.xavier_uniform_(self.conv.weight.data, 1.)
-        nn.init.constant_(self.conv.bias.data, 0.0)
+        # nn.init.xavier_uniform_(self.conv.weight.data, 1.)
+        # if bias:
+        #     nn.init.constant_(self.conv.bias.data, 0.0)
         self.convout = nn.utils.spectral_norm(self.conv)
         
     def forward(self, input):
@@ -72,8 +74,9 @@ class SNConvTranspose2d(nn.Module):
         super().__init__()
         self.conv = nn.ConvTranspose2d(in_channels, out_channels, kernel_size=kernel_size, stride=stride, padding=padding, 
         dilation = 1, groups = 1, bias=bias)
-        nn.init.xavier_uniform_(self.conv.weight.data, 1.)
-        nn.init.constant_(self.conv.bias.data, 0.0)
+        # nn.init.xavier_uniform_(self.conv.weight.data, 1.)
+        # if bias:
+        #     nn.init.constant_(self.conv.bias.data, 0.0)
         self.conv = nn.utils.spectral_norm(self.conv)
         
     def forward(self, input):

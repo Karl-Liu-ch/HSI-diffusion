@@ -110,6 +110,13 @@ class SN_MS_MSA(nn.Module):
             SNConv2d(dim, dim, 3, 1, 1, bias=False, groups=dim),
         )
         self.dim = dim
+        self.apply(self._init_weights)
+    
+    def _init_weights(self, m):
+        if isinstance(m, nn.Linear) or isinstance(m, nn.Conv2d):
+            nn.init.xavier_uniform_(m.weight, gain=1.)
+            if m.bias is not None:
+                nn.init.constant_(m.bias, 0)
 
     def forward(self, x_in):
         """
@@ -137,6 +144,60 @@ class SN_MS_MSA(nn.Module):
         x = x.permute(0, 3, 1, 2)    # Transpose
         x = x.reshape(b, h * w, self.num_heads * self.dim_head)
         out_c = self.proj(x).view(b, h, w, c)
+        out_p = self.pos_emb(v_inp.reshape(b,h,w,c).permute(0, 3, 1, 2)).permute(0, 2, 3, 1)
+        out = out_c + out_p
+
+        return out
+
+class SN_Conv_MS_MSA(nn.Module):
+    def __init__(
+            self,
+            dim,
+            dim_head,
+            heads,
+    ):
+        super().__init__()
+        self.num_heads = heads
+        self.dim_head = dim_head
+        self.to_q = SNConv2d(dim, dim_head * heads, 3, 1, 1, bias=False, groups=1)
+        self.to_k = SNConv2d(dim, dim_head * heads, 3, 1, 1, bias=False, groups=1)
+        self.to_v = SNConv2d(dim, dim_head * heads, 3, 1, 1, bias=False, groups=1)
+        self.rescale = nn.Parameter(torch.ones(heads, 1, 1))
+        self.proj = SNConv2d(dim_head * heads, dim, bias=True)
+        self.pos_emb = nn.Sequential(
+            SNConv2d(dim, dim, 3, 1, 1, bias=False, groups=dim),
+            nn.GELU(),
+            SNConv2d(dim, dim, 3, 1, 1, bias=False, groups=dim),
+        )
+        self.dim = dim
+
+    def forward(self, x_in):
+        """
+        x_in: [b,h,w,c]
+        return out: [b,h,w,c]
+        """
+        b, h, w, c = x_in.shape
+        x = x_in.permute(0,3,1,2)
+        q_inp = self.to_q(x).permute(0,2,3,1).reshape(b,h*w,c)
+        k_inp = self.to_k(x).permute(0,2,3,1).reshape(b,h*w,c)
+        v_inp = self.to_v(x).permute(0,2,3,1).reshape(b,h*w,c)
+        q, k, v = map(lambda t: rearrange(t, 'b n (h d) -> b h n d', h=self.num_heads),
+                                (q_inp, k_inp, v_inp))
+        v = v
+        # q: b,heads,hw,c
+        q = q.transpose(-2, -1)
+        k = k.transpose(-2, -1)
+        v = v.transpose(-2, -1)
+        q = F.normalize(q, dim=-1, p=2)
+        k = F.normalize(k, dim=-1, p=2)
+        attn = (k @ q.transpose(-2, -1))   # A = K^T*Q
+        attn = attn * self.rescale
+        attn = attn.softmax(dim=-1)
+        x = attn @ v   # b,heads,d,hw
+        x = x.permute(0, 3, 1, 2)    # Transpose
+        x = x.reshape(b, h * w, self.num_heads * self.dim_head)
+        x = x.view(b, h, w, c).permute(0,3,1,2)
+        out_c = self.proj(x).permute(0, 2, 3, 1)
         out_p = self.pos_emb(v_inp.reshape(b,h,w,c).permute(0, 3, 1, 2)).permute(0, 2, 3, 1)
         out = out_c + out_p
 
@@ -173,7 +234,8 @@ class MSAB(nn.Module):
         self.blocks = nn.ModuleList([])
         for _ in range(num_blocks):
             self.blocks.append(nn.ModuleList([
-                SN_MS_MSA(dim=dim, dim_head=dim_head, heads=heads),
+                # SN_MS_MSA(dim=dim, dim_head=dim_head, heads=heads),
+                SN_Conv_MS_MSA(dim=dim, dim_head=dim_head, heads=heads),
                 # PreNorm(dim, FeedForward(dim=dim))
                 FeedForward(dim=dim)
             ]))
@@ -234,14 +296,13 @@ class MST(nn.Module):
         self.apply(self._init_weights)
 
     def _init_weights(self, m):
-        pass
-        # if isinstance(m, SNLinear):
-        #     trunc_normal_(m.weight, std=.02)
-        #     if isinstance(m, SNLinear) and m.bias is not None:
-        #         nn.init.constant_(m.bias, 0)
-        # elif isinstance(m, nn.LayerNorm):
-        #     nn.init.constant_(m.bias, 0)
-        #     nn.init.constant_(m.weight, 1.0)
+        if isinstance(m, SNLinear):
+            nn.init.xavier_uniform_(m.weight, gain=1.)
+            if isinstance(m, SNLinear) and m.bias is not None:
+                nn.init.constant_(m.bias, 0)
+        elif isinstance(m, nn.LayerNorm):
+            nn.init.constant_(m.bias, 0)
+            nn.init.constant_(m.weight, 1.0)
 
     def forward(self, x):
         """

@@ -538,6 +538,16 @@ class DSSwin(nn.Module):
             dim_stage //= 2
         
         self.mapping = nn.Conv2d(dim, out_dim, 3, 1, 1, bias=False)
+        self.apply(self._init_weights)
+    
+    def _init_weights(self, m):
+        if isinstance(m, nn.Linear):
+            trunc_normal_(m.weight, std=.02)
+            if isinstance(m, nn.Linear) and m.bias is not None:
+                nn.init.constant_(m.bias, 0)
+        elif isinstance(m, nn.LayerNorm):
+            nn.init.constant_(m.bias, 0)
+            nn.init.constant_(m.weight, 1.0)
         
     def forward(self, x):
         b, c, h_inp, w_inp = x.shape

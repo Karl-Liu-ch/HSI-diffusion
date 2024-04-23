@@ -48,7 +48,7 @@ criterion_ssim = Loss_SSIM().to(device)
 
 def change_resolution(module, new_resolution):
     new_resolution = tuple(new_resolution)
-    if isinstance(module, SwinTransformerBlock_v2):
+    if isinstance(module, SwinTransformerBlock_v2) or isinstance(module, SwinTransformerBlock):
         module.change_resolution(new_resolution)
 
 class SpatialGate(nn.Module):
@@ -117,6 +117,13 @@ class SWTB(nn.Module):
         # self.model = SwinTransformerBlock_v2(dim=dim, input_resolution=input_resolution, num_heads=num_heads, window_size=window_size, shift_size=shift_size)
         # self.model = AgentSwin(dim=dim, input_resolution=input_resolution, num_heads=num_heads, window_size=window_size)
         # agent swin for later
+
+    def _init_respostnorm(self):
+        for blk in self.model:
+            nn.init.constant_(blk.norm1.bias, 0)
+            nn.init.constant_(blk.norm1.weight, 0)
+            nn.init.constant_(blk.norm2.bias, 0)
+            nn.init.constant_(blk.norm2.weight, 0)
         
     def forward(self, x):
         B, C, H, W = x.shape
@@ -182,10 +189,10 @@ class Adaptive_SWTB(nn.Module):
         spatialx = convx * spatialinter
         out = self.proj(rearrange(channelx, 'b c h w -> b (h w) c') + rearrange(spatialx, 'b c h w -> b (h w) c'))
         out = rearrange(out, 'b (h w) c -> b c h w', h = H, w = W)
-        out += x_in
-        ff = self.norm2(rearrange(out.clone(), 'b c h w -> b (h w) c'))
+        out = x_in + out
+        ff = self.norm2(rearrange(out, 'b c h w -> b (h w) c'))
         ff = self.ffn(ff, H, W)
-        out += rearrange(ff, 'b (h w) c -> b c h w', h = H, w = W)
+        out = rearrange(ff, 'b (h w) c -> b c h w', h = H, w = W) + out
         return out
 
 class Adaptive_MSAB(nn.Module):
@@ -218,6 +225,16 @@ class Adaptive_MSAB(nn.Module):
         )
         self.norm2 = nn.LayerNorm(dim)
         self.ffn = SGFN(in_features=dim, hidden_features=dim*2)
+        self.apply(self._init_weights)
+
+    def _init_weights(self, m):
+        if isinstance(m, nn.Linear):
+            trunc_normal_(m.weight, std=.02)
+            if isinstance(m, nn.Linear) and m.bias is not None:
+                nn.init.constant_(m.bias, 0)
+        elif isinstance(m, nn.LayerNorm):
+            nn.init.constant_(m.bias, 0)
+            nn.init.constant_(m.weight, 1.0)
         
     def forward(self, x_in):
         B, C, H, W = x_in.shape
@@ -234,10 +251,10 @@ class Adaptive_MSAB(nn.Module):
         spatialx = attnx * spatialinter
         out = self.proj(rearrange(channelx, 'b c h w -> b (h w) c') + rearrange(spatialx, 'b c h w -> b (h w) c'))
         out = rearrange(out, 'b (h w) c -> b c h w', h = H, w = W)
-        out += x_in
-        ff = self.norm2(rearrange(out.clone(), 'b c h w -> b (h w) c'))
+        out = x_in + out
+        ff = self.norm2(rearrange(out, 'b c h w -> b (h w) c'))
         ff = self.ffn(ff, H, W)
-        out += rearrange(ff, 'b (h w) c -> b c h w', h = H, w = W)
+        out = rearrange(ff, 'b (h w) c -> b c h w', h = H, w = W) + out
         return out
 
 class DTNBlock(nn.Module):
@@ -262,34 +279,32 @@ class DTNBlock(nn.Module):
 class DownSample(nn.Module):
     def __init__(self, inchannel, outchannel):
         super().__init__()
-        # self.model = nn.Sequential(
-        #     nn.Conv2d(inchannel, outchannel, kernel_size=4, stride=2, padding=1, bias=False),
-        #     nn.BatchNorm2d(outchannel), 
-        #     nn.ReLU(True)
-        # )
         self.model = nn.Sequential(
-            nn.PixelUnshuffle(2),
-            nn.Conv2d(inchannel * 4, outchannel, kernel_size=3, stride=1, padding=1, bias=False), 
+            nn.Conv2d(inchannel, outchannel, kernel_size=4, stride=2, padding=1, bias=False),
             nn.BatchNorm2d(outchannel), 
-            nn.ReLU(True),
+            # nn.LeakyReLU(0.1, True), 
+            nn.GELU()
         )
         
     def forward(self, x):
         return self.model(x)
+    
 class UpSample(nn.Module):
     def __init__(self, inchannel, outchannel):
         super().__init__()
-        # self.model = nn.Sequential(
-        #     nn.ConvTranspose2d(inchannel, outchannel, kernel_size=4, stride=2, padding=1, bias=False),
-        #     nn.BatchNorm2d(outchannel), 
-        #     nn.ReLU(True)
-        # )
         self.model = nn.Sequential(
-            nn.Conv2d(inchannel, outchannel * 4, kernel_size=3, stride=1, padding=1, bias=False), 
-            nn.BatchNorm2d(outchannel * 4), 
-            nn.ReLU(True),
-            nn.PixelShuffle(2)
+            nn.ConvTranspose2d(inchannel, outchannel, kernel_size=4, stride=2, padding=1),
+            nn.BatchNorm2d(outchannel), 
+            # nn.LeakyReLU(0.1, True),
+            nn.GELU()
         )
+        # self.model = nn.Sequential(
+        #     nn.Conv2d(inchannel, inchannel * 4, kernel_size=1, stride=1, padding=0, bias=False), 
+        #     # nn.LeakyReLU(0.1, True), 
+        #     nn.GELU(), 
+        #     nn.PixelShuffle(2),
+        #     nn.Conv2d(inchannel, outchannel, kernel_size=3, stride=1, padding=1, bias=False), 
+        # )
         
     def forward(self, x):
         return self.model(x)
@@ -307,6 +322,9 @@ class DTN(nn.Module):
                  bottleblock = 4, 
                  num_msab = 1):
         super().__init__()
+        self.min_window = window_size * 2 ** len(n_block)
+        img_size[0] = (self.min_window - img_size[0] % self.min_window) % self.min_window + img_size[0]
+        img_size[1] = (self.min_window - img_size[1] % self.min_window) % self.min_window + img_size[1]
         dim = out_dim
         self.embedding = nn.Conv2d(in_dim, dim, 3, 1, 1, bias=False)
         self.stage = len(n_block)-1
@@ -354,7 +372,17 @@ class DTN(nn.Module):
             dim_stage //= 2
         
         self.mapping = nn.Conv2d(dim, out_dim, 3, 1, 1, bias=False)
-        
+        self.apply(self._init_weights)
+    
+    def _init_weights(self, m):
+        if isinstance(m, nn.Linear):
+            trunc_normal_(m.weight, std=.02)
+            if isinstance(m, nn.Linear) and m.bias is not None:
+                nn.init.constant_(m.bias, 0)
+        # elif isinstance(m, nn.LayerNorm):
+        #     nn.init.constant_(m.bias, 0)
+        #     nn.init.constant_(m.weight, 1.0)
+
     def forward(self, x):
         b, c, h_inp, w_inp = x.shape
         pad_h = (self.min_window - h_inp % self.min_window) % self.min_window
@@ -527,7 +555,7 @@ if __name__ == '__main__':
                     window_size=8, 
                     n_block=[2,2,2,2], 
                     bottleblock = 4).to(device)
-    model.apply(init_weights_uniform)
+    # model.apply(init_weights_uniform)
     # model = DTN_multi_stage(in_channels=3, out_channels=31, n_feat=31, img_size=[128, 128], window=32).to(device)
     input = torch.rand([1, 3, 128, 128]).to(device)
     output = model(input.float())
