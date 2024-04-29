@@ -205,7 +205,7 @@ class GetDataset(Dataset):
         return self.length
 
 class TrainDataset(GetDataset):
-    def __init__(self, data_root, crop_size, valid_ratio, test_ratio, arg=True, datanames = ['BGU/','ARAD/'], random_split = True, stride=128):
+    def __init__(self, data_root, crop_size, valid_ratio, test_ratio, arg=True, datanames = ['ARAD/'], random_split = True, stride=128):
         super().__init__(data_root, crop_size, valid_ratio, test_ratio, arg=arg, datanames = datanames)
         trainsets = []
         for name in self.datanames:
@@ -220,7 +220,7 @@ class TrainDataset(GetDataset):
         self.length = len(self.hypers)
 
 class TestDataset(GetDataset):
-    def __init__(self, data_root, crop_size, valid_ratio, test_ratio, arg=False, datanames = ['BGU/','ARAD/'], cave = False, random_split = True, stride=128):
+    def __init__(self, data_root, crop_size, valid_ratio, test_ratio, arg=False, datanames = ['ARAD/'], cave = False, random_split = True, stride=128):
         super().__init__(data_root, crop_size, valid_ratio, test_ratio, arg=arg, datanames = datanames)
         self.testset = []
         for name in self.datanames:
@@ -237,10 +237,10 @@ class TestDataset(GetDataset):
             self.hypers.extend(testset[0])
             self.bgrs.extend(testset[1])
             self.ycrcbs.extend(testset[2])
-        self.length = len(self.hyper)
+        self.length = len(self.hypers)
 
 class TestFullDataset(GetDataset):
-    def __init__(self, data_root, crop_size, valid_ratio, test_ratio, arg=False, datanames = ['BGU/','ARAD/'], cave = True, random_split = True):
+    def __init__(self, data_root, crop_size, valid_ratio, test_ratio, arg=False, datanames = ['ARAD/'], cave = True, random_split = True):
         super().__init__(data_root, crop_size, valid_ratio, test_ratio, arg=arg, datanames = datanames)
         self.testset = []
         for name in self.datanames:
@@ -257,10 +257,10 @@ class TestFullDataset(GetDataset):
             self.hypers.extend(testset[0])
             self.bgrs.extend(testset[1])
             self.ycrcbs.extend(testset[2])
-        self.length = len(self.hyper)
+        self.length = len(self.hypers)
 
 class ValidFullDataset(GetDataset):
-    def __init__(self, data_root, crop_size, valid_ratio, test_ratio, arg=False, datanames = ['BGU/','ARAD/'], random_split = True):
+    def __init__(self, data_root, crop_size, valid_ratio, test_ratio, arg=False, datanames = ['ARAD/'], random_split = True):
         super().__init__(data_root, crop_size, valid_ratio, test_ratio, arg=arg, datanames = datanames)
         self.testset = []
         for name in self.datanames:
@@ -272,10 +272,10 @@ class ValidFullDataset(GetDataset):
             self.hypers.extend(testset[0])
             self.bgrs.extend(testset[1])
             self.ycrcbs.extend(testset[2])
-        self.length = len(self.hyper)
+        self.length = len(self.hypers)
 
 class ValidDataset(GetDataset):
-    def __init__(self, data_root, crop_size, valid_ratio, test_ratio, arg=True, datanames = ['BGU/','ARAD/'], random_split = True, stride=128):
+    def __init__(self, data_root, crop_size, valid_ratio, test_ratio, arg=False, datanames = ['ARAD/'], random_split = True, stride=128):
         super().__init__(data_root, crop_size, valid_ratio, test_ratio, arg=arg, datanames = datanames)
         self.validset = []
         for name in self.datanames:
@@ -287,10 +287,9 @@ class ValidDataset(GetDataset):
             self.hypers.extend(validset[0])
             self.bgrs.extend(validset[1])
             self.ycrcbs.extend(validset[2])
-        self.length = len(self.hyper)
+        self.length = len(self.hypers)
 
 if __name__ == '__main__':
-    testset = TrainDataset(root, 256, 0.001, 0.998, arg=False, datanames=['ARAD/'], stride=128)
-    print(testset.__len__())
-    for test in testset:
-        print(test['label'].max())
+    trainset = Train_Dataset(root, 512, 0.1, 0.8, arg=False, datanames=['ARAD/'], stride=128)
+    valset = TrainDataset(root, 512, 0.1, 0.8, arg=False, datanames=['ARAD/'], stride=128)
+    print(trainset[0]['cond'] == valset[0]['cond'])

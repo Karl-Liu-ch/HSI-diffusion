@@ -152,9 +152,9 @@ class Conv_MS_MSA(nn.Module):
         super().__init__()
         self.num_heads = heads
         self.dim_head = dim_head
-        self.to_q = nn.Conv2d(dim, dim_head * heads, 3, 1, 1, bias=False, groups=1)
-        self.to_k = nn.Conv2d(dim, dim_head * heads, 3, 1, 1, bias=False, groups=1)
-        self.to_v = nn.Conv2d(dim, dim_head * heads, 3, 1, 1, bias=False, groups=1)
+        self.to_q = nn.Conv2d(dim, dim_head * heads, 3, 1, 1, bias=False, groups=dim)
+        self.to_k = nn.Conv2d(dim, dim_head * heads, 3, 1, 1, bias=False, groups=dim)
+        self.to_v = nn.Conv2d(dim, dim_head * heads, 3, 1, 1, bias=False, groups=dim)
         self.rescale = nn.Parameter(torch.ones(heads, 1, 1))
         self.proj = nn.Conv2d(dim_head * heads, dim, 3, 1, 1,bias=True)
         self.pos_emb = nn.Sequential(
@@ -222,15 +222,21 @@ class MSAB(nn.Module):
             dim_head,
             heads,
             num_blocks,
+            use_conv = False
     ):
         super().__init__()
         self.blocks = nn.ModuleList([])
         for _ in range(num_blocks):
-            self.blocks.append(nn.ModuleList([
-                # MS_MSA(dim=dim, dim_head=dim_head, heads=heads),
-                Conv_MS_MSA(dim=dim, dim_head=dim_head, heads=heads),
-                PreNorm(dim, FeedForward(dim=dim))
-            ]))
+            if use_conv:
+                self.blocks.append(nn.ModuleList([
+                    Conv_MS_MSA(dim=dim, dim_head=dim_head, heads=heads),
+                    PreNorm(dim, FeedForward(dim=dim))
+                ]))
+            else:
+                self.blocks.append(nn.ModuleList([
+                    MS_MSA(dim=dim, dim_head=dim_head, heads=heads),
+                    PreNorm(dim, FeedForward(dim=dim))
+                ]))
 
     def forward(self, x):
         """

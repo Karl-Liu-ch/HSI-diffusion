@@ -6,7 +6,7 @@ import argparse
 parser = argparse.ArgumentParser(description="Spectral Recovery Toolbox")
 parser.add_argument('--method', type=str, default='sncwgan_dtn')
 parser.add_argument('--datanames', type=list, default=['ARAD/'])
-parser.add_argument("-c",'--config', type=str, default='configs/sncwgan_dtn.yaml')
+parser.add_argument("-c",'--config', type=str, default='configs/dtn_sndisc.yaml')
 parser.add_argument('--mode', type=str, default='train')
 parser.add_argument("--batch_size", type=int, default=32, help="batch size")
 parser.add_argument("--end_epoch", type=int, default=101, help="number of epochs")

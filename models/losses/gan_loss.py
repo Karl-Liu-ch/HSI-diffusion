@@ -152,8 +152,7 @@ class Loss(nn.Module):
             rec_grads = torch.autograd.grad(rec_loss, last_layer, retain_graph=True)[0]
             g_grads = torch.autograd.grad(g_loss, last_layer, retain_graph=True)[0]
         else:
-            rec_grads = torch.autograd.grad(rec_loss, self.last_layer[0], retain_graph=True)[0]
-            g_grads = torch.autograd.grad(g_loss, self.last_layer[0], retain_graph=True)[0]
+            return 1.0
 
         d_weight = torch.norm(rec_grads) / (torch.norm(g_grads) + 1e-4)
         d_weight = torch.clamp(d_weight, 0.0, 1e4).detach()
@@ -198,7 +197,7 @@ class Loss(nn.Module):
         else:
             perceptual_loss = 0
         total_loss = - disc_fake + rec_loss + feature_loss * self.features_weight * disc_factor + perceptual_loss
-        log = {'gen loss':-disc_fake, 'recon loss':rec_loss}
+        log = {'gen loss':-disc_fake, 'recon loss':rec_loss, 'delta e': self.deltaELoss(reconstructions, labels)}
         return total_loss, log
     
     def train_disc(self, discriminator, reconstructions, labels, cond, global_step):
@@ -263,8 +262,10 @@ class LS_Loss(Loss):
         disc_fake = self.criterion(disc_fake, real_labels)
         disc_fake = disc_fake * self.calculate_adaptive_weight(rec_loss, disc_fake, last_layer) * disc_factor
         feature_loss = 0
-        perceptual_loss = self.cal_perceptual_loss(reconstructions, labels) * self.perceptual_weight
+        perceptual_loss = 0
+        if self.perceptual_weight > 0:
+            perceptual_loss = self.cal_perceptual_loss(reconstructions, labels) * self.perceptual_weight
         total_loss = - disc_fake + rec_loss + feature_loss * self.features_weight * disc_factor + perceptual_loss
-        log = {'gen loss':'%.9f'%(-disc_fake), 'recon loss': '%.9f'%rec_loss}
+        log = {'gen loss':-disc_fake, 'recon loss':rec_loss}
         return total_loss, log
     

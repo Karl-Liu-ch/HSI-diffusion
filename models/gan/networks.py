@@ -32,9 +32,18 @@ class UnetGenerator(nn.Module):
         unet_block = UnetSkipConnectionBlock(ngf, ngf * 2, input_nc=None, submodule=unet_block, norm_layer=norm_layer, n_blocks=n_blocks)
         self.model = UnetSkipConnectionBlock(output_nc, ngf, input_nc=input_nc, submodule=unet_block, outermost=True, norm_layer=norm_layer, n_blocks=n_blocks)  # add the outermost layer
 
-    def forward(self, input):
+    def forward(self, x):
         """Standard forward"""
-        return self.model(input)
+        b, c, h_inp, w_inp = x.shape
+        hb, wb = 128, 128
+        pad_h = (hb - h_inp % hb) % hb
+        pad_w = (wb - w_inp % wb) % wb
+        x = F.pad(x, [0, pad_w, 0, pad_h], mode='reflect')
+        h = self.model(x)
+        return h[:, :, :h_inp, :w_inp]
+    
+    def get_last_layer(self):
+        return None
 
 
 class UnetSkipConnectionBlock(nn.Module):

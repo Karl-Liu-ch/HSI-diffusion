@@ -16,8 +16,6 @@ import re
 import matplotlib.pyplot as plt
 from torch import randperm
 from tqdm import tqdm
-generator = torch.Generator().manual_seed(42)
-indices = randperm(31, generator=generator).tolist()
 
 root = '/work3/s212645/Spectral_Reconstruction/'
 datanames = ['ICVL/', 'ARAD/', 'CAVE/']
@@ -174,6 +172,8 @@ def random_split_full(path, valid_ratio, test_ratio, mode = 'train'):
     trainlist = []
     validlist = []
     testlist = []
+    generator = torch.Generator().manual_seed(42)
+    indices = randperm(31, generator=generator).tolist()
     indices = randperm(all_length, generator=generator).tolist()
     for i in range(train_size):
         trainlist.append(matlist[indices[i]])
@@ -207,6 +207,8 @@ def random_split_dataset(path, valid_ratio, test_ratio, imsize, mode = 'train', 
     trainlist = []
     validlist = []
     testlist = []
+    generator = torch.Generator().manual_seed(42)
+    indices = randperm(31, generator=generator).tolist()
     indices = randperm(all_length, generator=generator).tolist()
     for i in range(train_size):
         trainlist.append(matlist[indices[i]])
@@ -247,13 +249,17 @@ def Resize(hyper, rgb, ycrcb, h, w):
     ycrcb_s = cv2.resize(ycrcb, [h, w], interpolation = cv2.INTER_LINEAR)
     return hyper_s, rgb_s, ycrcb_s
 
-def data_resize(mat, imsize):
+def data_resize(mat, imsize, one = True):
     spectral_images = []
     rgb_images = []
     ycrcb_images = []
     hyper = np.float32(np.array(mat['cube']))
-    rgb = normalization(np.array(mat['rgb']))
-    ycrcb = normalization(np.array(mat['ycrcb']))
+    if one:
+        rgb = normalization(np.array(mat['rgb']), np.array(mat['rgb']).max(), np.array(mat['rgb']).min())
+        ycrcb = normalization(np.array(mat['ycrcb']), np.array(mat['ycrcb']).max(), np.array(mat['ycrcb']).min())
+    else:
+        rgb = normalization(np.array(mat['rgb']), 255.0, 0.0)
+        ycrcb = normalization(np.array(mat['ycrcb']), 240.0, 0.0)
     h = rgb.shape[0]
     w = rgb.shape[1]
     while min(h // imsize, w // imsize) >= 1:
@@ -273,10 +279,10 @@ def data_resize(mat, imsize):
 def patch_gen(array, imsize, h, w):
     return array[h-imsize:h, w-imsize:w, :]
 
-def Im2Patch(img, imsize, stride=8):
+def Im2Patch(img, imsize, stride):
     patches = []
     h, w, c = img.shape
-    if imsize > h and imsize > w:
+    if imsize >= h and imsize >= w:
         patches.append(img)
     else:
         h_num = (h - imsize) // stride + 1
@@ -329,15 +335,19 @@ def get_all_patches_with_rescale(mat, imsize, stride):
         ycrcbs += ycrcbpatches
     return spectrals, rgbs, ycrcbs
 
-def get_all_patches(mat, imsize, stride = 128):
+def get_all_patches(mat, imsize, stride = 128, one = True):
     spectrals = []
     rgbs = []
     ycrcbs = []
     # resize_spectrals, resize_rgbs = data_resize(mat, imsize)
     # for i in range(len(resize_spectrals)):
     hyper = np.float32(np.array(mat['cube']))
-    rgb = normalization(np.array(mat['rgb']))
-    ycrcb = normalization(np.array(mat['ycrcb']))
+    if one:
+        rgb = normalization(np.array(mat['rgb']), np.array(mat['rgb']).max(), np.array(mat['rgb']).min())
+        ycrcb = normalization(np.array(mat['ycrcb']), np.array(mat['ycrcb']).max(), np.array(mat['ycrcb']).min())
+    else:
+        rgb = normalization(np.array(mat['rgb']), 255.0, 0.0)
+        ycrcb = normalization(np.array(mat['ycrcb']), 240.0, 0.0)
     # hyperpatches = patch_image(hyper, imsize, stride)
     # rgbpatches = patch_image(rgb, imsize, stride)
     hyperpatches = Im2Patch(hyper, imsize, stride)
@@ -348,8 +358,8 @@ def get_all_patches(mat, imsize, stride = 128):
     ycrcbs += ycrcbpatches
     return spectrals, rgbs, ycrcbs
 
-def normalization(x):
-    return (x - x.min()) / (x.max() - x.min())
+def normalization(a, a_max, a_min):
+    return (a - a_min) / (a_max - a_min)
 
 if __name__ == '__main__':
     generator = torch.Generator().manual_seed(42)

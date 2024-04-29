@@ -14,7 +14,7 @@
 ### -- set walltime limit: hh:mm --  maximum 24 hours for GPU-queues right now
 #BSUB -W 24:00
 # request 40GB of system-memory
-#BSUB -R "rusage[mem=10GB]"
+#BSUB -R "rusage[mem=20GB]"
 ### -- set the email address --
 # please uncomment the following line and put in your e-mail address,
 # if you want to receive e-mail notifications on a non-default address
@@ -37,6 +37,4 @@ conda activate pytorch
 cd /zhome/02/b/164706/Master_Courses/thesis/HSI-diffusion/
 export PYTHONUNBUFFERED=1
 python -u train.py -c configs/dtn_sndisc.yaml --gpu_id 0 --batch_size 32 --mode train -r
-# python -u train.py -c configs/msdtn_sndisc.yaml --gpu_id 0 --batch_size 16 --mode train
-# python -u models/gan/swin-gan.py --gpu_id 0 --batch_size 40 --G DTN --mode train
-# python -u models/gan/swin-gan.py --gpu_id 0 --batch_size 16 --G DTN --mode train
+# python -u train.py -c configs/dtn_sndisc.yaml --gpu_id 0 --batch_size 8 --mode train

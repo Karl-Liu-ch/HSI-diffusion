@@ -23,7 +23,7 @@ params:
   lossconfig:
     target: models.losses.gan_loss.Wasserstein_Loss
     params:
-      l1_weight: 100.0
+      l1_weight: 40.0
       sam_weight: 1.0
       features_weight: 0.0
       deltaE_weight: 1.0

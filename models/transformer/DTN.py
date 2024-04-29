@@ -117,6 +117,7 @@ class SWTB(nn.Module):
         # self.model = SwinTransformerBlock_v2(dim=dim, input_resolution=input_resolution, num_heads=num_heads, window_size=window_size, shift_size=shift_size)
         # self.model = AgentSwin(dim=dim, input_resolution=input_resolution, num_heads=num_heads, window_size=window_size)
         # agent swin for later
+        self._init_respostnorm()
 
     def _init_respostnorm(self):
         for blk in self.model:
@@ -201,7 +202,7 @@ class Adaptive_MSAB(nn.Module):
                  dim_head=31, 
                  heads=1):
         super().__init__()
-        self.model = MSAB(dim=dim, num_blocks=num_blocks, dim_head=dim_head, heads=heads)
+        self.model = MSAB(dim=dim, num_blocks=num_blocks, dim_head=dim_head, heads=heads, use_conv=True)
         
         self.dwconv = nn.Sequential(
             nn.Conv2d(dim, dim, kernel_size=3, stride=1, padding=1, groups=dim),

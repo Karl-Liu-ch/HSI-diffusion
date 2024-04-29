@@ -39,15 +39,17 @@ class EarlyStopper:
         self.patience = patience
         self.min_delta = min_delta
         self.counter = 0
+        self.epoch = 0
         self.min_validation_loss = float('inf')
         self.start_epoch = start_epoch
         self.gl_weight = gl_weight
 
-    def early_stop(self, validation_loss, train_loss, epoch):
-        if ((validation_loss / train_loss) > self.gl_weight) and (epoch > self.start_epoch):
-            return True
-        if epoch < self.start_epoch or (train_loss / validation_loss) > 1.0:
+    def early_stop(self, validation_loss, train_loss):
+        self.epoch += 1
+        if self.epoch < self.start_epoch or (train_loss / validation_loss) > 1.0:
             return False
+        # elif ((validation_loss / train_loss) > self.gl_weight) and (self.epoch > self.start_epoch):
+        #     return True
         else:
             if validation_loss < self.min_validation_loss:
                 self.min_validation_loss = validation_loss
@@ -57,6 +59,19 @@ class EarlyStopper:
                 if self.counter >= self.patience:
                     return True
             return False
+    
+    def reset(self):
+        self.min_validation_loss = float('inf')
+        self.epoch = 0
+        self.counter = 0
+
+    def save(self):
+        return {'epoch': self.epoch, 'counter': self.counter, 'loss': self.min_validation_loss}
+    
+    def load(self, checkpoint):
+        self.min_validation_loss = checkpoint['loss']
+        self.epoch = checkpoint['epoch']
+        self.counter = checkpoint['counter']
     
 def deltaELoss(fake, gt):
     # fake = filter(fake, fake)

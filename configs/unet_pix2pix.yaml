@@ -1,0 +1,30 @@
+target: models.gan.gan.Gan
+params:
+  ckpath: /work3/s212645/Spectral_Reconstruction/checkpoint/gan/UnetGenerator-NLayerDiscriminator/
+  valid_ratio: 0.1
+  test_ratio: 0.1
+  cond_key: 'cond'
+  progressive_train: False
+  genconfig:
+    target: models.gan.networks.UnetGenerator
+    params:
+      input_nc: 3
+      output_nc: 31
+
+  disconfig:
+    target: models.gan.networks.NLayerDiscriminator
+    params:
+      input_nc: 34
+
+  lossconfig:
+    target: models.losses.gan_loss.LS_Loss
+    params:
+      l1_weight: 100.0
+      sam_weight: 0.0
+      features_weight: 0.0
+      disc_weight: 0.0
+      deltaE_weight: 0.0
+      perceptual_weight: 0.0
+      threshold: 0
+  
+  

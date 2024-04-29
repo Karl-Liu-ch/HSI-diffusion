@@ -1,0 +1,14 @@
+target: models.transformer.basemodel.TrainModel
+params:
+  ckpath: /work3/s212645/Spectral_Reconstruction/checkpoint/MST_Plus_Plus/
+  image_key: 'label'
+  cond_key: 'cond'
+  valid_ratio: 0.1
+  test_ratio: 0.1
+  genconfig:
+    target: models.transformer.MST_Plus_Plus
+    params:
+      in_channels: 3
+      out_channels: 31
+      n_feat: 31
+      stage: 3
