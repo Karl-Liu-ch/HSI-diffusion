@@ -106,8 +106,9 @@ class Gan():
         
         # self.optimG = optim.Adam(self.G.parameters(), lr=learning_rate, betas=(0.9, 0.999), eps=1e-8)
         # self.optimD = optim.Adam(self.D.parameters(), lr=learning_rate, betas=(0.9, 0.999), eps=1e-8)
-        self.optimG = optim.Adam(self.G.parameters(), lr=learning_rate, betas=(0.5, 0.9), eps=1e-14)
-        self.optimD = optim.Adam(self.D.parameters(), lr=learning_rate, betas=(0.5, 0.9), eps=1e-12)
+        # self.optimG = optim.Adam(self.G.parameters(), lr=learning_rate, betas=(0.5, 0.9), eps=1e-14)
+        self.optimG = optim.AdamW(self.G.parameters(), lr=learning_rate, betas=(0.5, 0.9), eps=1e-8, weight_decay=0.05)
+        self.optimD = optim.Adam(self.D.parameters(), lr=learning_rate, betas=(0.5, 0.9), eps=1e-8)
         self.root = ckpath
         if not opt.resume:
             shutil.rmtree(self.root + 'runs/', ignore_errors=True)
@@ -164,20 +165,20 @@ class Gan():
         self.load_dataset()
         iter_per_epoch = len(self.train_data)
         self.total_iteration = self.end_epoch * (iter_per_epoch // self.batch_size + 1)
-        self.schedulerG = torch.optim.lr_scheduler.CosineAnnealingLR(self.optimG, self.total_iteration, eta_min=1e-6)
-        self.schedulerD = torch.optim.lr_scheduler.CosineAnnealingLR(self.optimD, self.total_iteration, eta_min=1e-6)
+        self.schedulerG = torch.optim.lr_scheduler.CosineAnnealingWarmRestarts(self.optimG, T_0=self.total_iteration, T_mult=1, eta_min=1e-6, last_epoch=-1)
+        self.schedulerD = torch.optim.lr_scheduler.CosineAnnealingWarmRestarts(self.optimD, T_0=self.total_iteration, T_mult=1, eta_min=1e-6, last_epoch=-1)
         while self.epoch<self.end_epoch:
             self.G.train()
             self.D.train()
             losses = AverageMeter()
             g_losses = AverageMeter()
             d_losses = AverageMeter()
-            train_loader = DataLoader(dataset=self.train_data, batch_size=self.batch_size, shuffle=True, num_workers=32,
+            train_loader = DataLoader(dataset=self.train_data, batch_size=self.batch_size, shuffle=True, num_workers=8,
                                     pin_memory=True, drop_last=False)
             if len(self.val_data) > 95:
-                val_loader = DataLoader(dataset=self.val_data, batch_size=self.batch_size, shuffle=False, num_workers=32, pin_memory=True)
+                val_loader = DataLoader(dataset=self.val_data, batch_size=self.batch_size, shuffle=False, num_workers=8, pin_memory=True)
             else:
-                val_loader = DataLoader(dataset=self.val_data, batch_size=1, shuffle=False, num_workers=32, pin_memory=True)
+                val_loader = DataLoader(dataset=self.val_data, batch_size=1, shuffle=False, num_workers=8, pin_memory=True)
             pbar = tqdm(train_loader)
             for i, batch in enumerate(pbar):
                 label, cond = self.get_input(batch)
@@ -188,21 +189,23 @@ class Gan():
                 else:
                     z = cond
                     
-                # train G
-                for _ in range(self.n_critic):
-                    x_fake = self.G(z)
-                    self.optimG.zero_grad()
-                    lrG = self.optimG.param_groups[0]['lr']
-                    loss_G, log_g = self.loss(self.D, x_fake, label, cond, self.iteration, mode = 'gen', last_layer = self.get_last_layer())
-                    loss_G.backward()
-                    self.optimG.step()
-                
                 # if self.iteration % self.n_critic == 0:
+                x_fake = self.G(z)
                 # train D
+                # for _ in range(self.n_critic):
                 self.optimD.zero_grad()
                 loss_d, log_d = self.loss(self.D, x_fake, label, cond, self.iteration, mode = 'dics', last_layer = self.get_last_layer())
                 loss_d.backward()
                 self.optimD.step()
+                
+                # train G
+                # for _ in range(self.n_critic):
+                # x_fake = self.G(z)
+                self.optimG.zero_grad()
+                lrG = self.optimG.param_groups[0]['lr']
+                loss_G, log_g = self.loss(self.D, x_fake, label, cond, self.iteration, mode = 'gen', last_layer = self.get_last_layer())
+                loss_G.backward()
+                self.optimG.step()
                 
                 self.schedulerD.step()
                 self.schedulerG.step()
@@ -220,7 +223,7 @@ class Gan():
                 self.writer.add_scalar("disc loss real/train", log_d['real loss'], self.iteration)
                 self.writer.add_scalar("disc loss fake/train", log_d['fake loss'], self.iteration)
                 self.iteration = self.iteration+1
-                logs = {'epoch':self.epoch, 'iter':self.iteration, 'lr':'%.9f'%lrG, 'train_losses':'%.9f'%(losses.avg), 'G_loss':'%.9f'%(g_losses.avg), 'D_loss':'%.9f'%(d_losses.avg)}
+                logs = {'epoch':self.epoch, 'iter':self.iteration, 'lr':'%.9f'%lrG, 'train_losses':'%.9f'%(losses.avg), 'G_loss':'%.9f'%(loss_G), 'D_loss':'%.9f'%(loss_d)}
                 pbar.set_postfix(logs)
             # validation
             mrae_loss, rmse_loss, psnr_loss, sam_loss, sid_loss = self.validate(val_loader)

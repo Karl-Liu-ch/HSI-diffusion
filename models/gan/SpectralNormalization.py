@@ -84,11 +84,11 @@ class SNConvTranspose2d(nn.Module):
 
 
 class SNResnetBlock(nn.Module):
-    def __init__(self, dim, padding_type, use_dropout, use_bias):
+    def __init__(self, dim, padding_type, use_dropout, use_bias, act_func = nn.LeakyReLU(0.1, True)):
         super(SNResnetBlock, self).__init__()
-        self.conv_block = self.build_conv_block(dim, padding_type, use_dropout, use_bias)
+        self.conv_block = self.build_conv_block(dim, padding_type, use_dropout, use_bias, act_func)
 
-    def build_conv_block(self, dim, padding_type, use_dropout, use_bias):
+    def build_conv_block(self, dim, padding_type, use_dropout, use_bias, act_func):
         conv_block = []
         p = 0
         if padding_type == 'reflect':
@@ -100,7 +100,7 @@ class SNResnetBlock(nn.Module):
         else:
             raise NotImplementedError('padding [%s] is not implemented' % padding_type)
 
-        conv_block += [SNConv2d(dim, dim, kernel_size=3, padding=p, bias=use_bias), nn.ReLU(True)]
+        conv_block += [SNConv2d(dim, dim, kernel_size=3, padding=p, bias=use_bias), act_func]
         if use_dropout:
             conv_block += [nn.Dropout(0.5)]
 

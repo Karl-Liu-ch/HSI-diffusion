@@ -17,7 +17,7 @@ params:
       input_nc: 34
 
   lossconfig:
-    target: models.losses.gan_loss.LS_Loss
+    target: models.losses.gan_loss.Loss
     params:
       l1_weight: 100.0
       sam_weight: 0.0
@@ -26,5 +26,5 @@ params:
       deltaE_weight: 0.0
       perceptual_weight: 0.0
       threshold: 0
-  
+      losstype: lsgan  
   

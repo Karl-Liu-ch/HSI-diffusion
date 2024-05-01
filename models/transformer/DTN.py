@@ -202,7 +202,7 @@ class Adaptive_MSAB(nn.Module):
                  dim_head=31, 
                  heads=1):
         super().__init__()
-        self.model = MSAB(dim=dim, num_blocks=num_blocks, dim_head=dim_head, heads=heads, use_conv=True)
+        self.model = MSAB(dim=dim, num_blocks=num_blocks, dim_head=dim_head, heads=heads, use_conv=False)
         
         self.dwconv = nn.Sequential(
             nn.Conv2d(dim, dim, kernel_size=3, stride=1, padding=1, groups=dim),
@@ -270,8 +270,6 @@ class DTNBlock(nn.Module):
         for i in range(num_block):
             layer += [Adaptive_MSAB(dim, num_blocks=num_msab, dim_head=dim_head, heads=dim // dim_head)]
             layer += [Adaptive_SWTB(dim, self.input_resolution, num_heads=dim // dim_head, window_size=window_size)]
-            # layer += [Adaptive_MSAB(dim, num_blocks=num_msab, dim_head=dim_head, heads=dim // dim_head)]
-            # layer += [Adaptive_SWTB(dim, self.input_resolution, num_heads=dim // dim_head, window_size=window_size, shift_size=window_size // 2)]
         self.model = nn.Sequential(*layer)
         
     def forward(self, x):
@@ -283,9 +281,11 @@ class DownSample(nn.Module):
         self.model = nn.Sequential(
             nn.Conv2d(inchannel, outchannel, kernel_size=4, stride=2, padding=1, bias=False),
             nn.BatchNorm2d(outchannel), 
-            # nn.LeakyReLU(0.1, True), 
             nn.GELU()
         )
+        # self.model = nn.Sequential(
+        #     nn.Conv2d(inchannel, outchannel, kernel_size=4, stride=2, padding=1, bias=False)
+        # )
         
     def forward(self, x):
         return self.model(x)
@@ -293,19 +293,22 @@ class DownSample(nn.Module):
 class UpSample(nn.Module):
     def __init__(self, inchannel, outchannel):
         super().__init__()
-        self.model = nn.Sequential(
-            nn.ConvTranspose2d(inchannel, outchannel, kernel_size=4, stride=2, padding=1),
-            nn.BatchNorm2d(outchannel), 
-            # nn.LeakyReLU(0.1, True),
-            nn.GELU()
-        )
         # self.model = nn.Sequential(
-        #     nn.Conv2d(inchannel, inchannel * 4, kernel_size=1, stride=1, padding=0, bias=False), 
-        #     # nn.LeakyReLU(0.1, True), 
-        #     nn.GELU(), 
-        #     nn.PixelShuffle(2),
-        #     nn.Conv2d(inchannel, outchannel, kernel_size=3, stride=1, padding=1, bias=False), 
+        #     nn.ConvTranspose2d(inchannel, outchannel, kernel_size=4, stride=2, padding=1),
+        #     nn.BatchNorm2d(outchannel), 
+        #     nn.GELU()
         # )
+        # self.model = nn.Sequential(
+        #     nn.ConvTranspose2d(inchannel, outchannel, stride=2, kernel_size=2, padding=0, output_padding=0),
+        #     nn.Conv2d(inchannel, outchannel, 1, 1, bias=False),
+        # )
+        self.model = nn.Sequential(
+            nn.Conv2d(inchannel, inchannel * 4, kernel_size=1, stride=1, padding=0, bias=False), 
+            # nn.LeakyReLU(0.1, True), 
+            nn.GELU(), 
+            nn.PixelShuffle(2),
+            nn.Conv2d(inchannel, outchannel, kernel_size=3, stride=1, padding=1, bias=False), 
+        )
         
     def forward(self, x):
         return self.model(x)
@@ -321,7 +324,7 @@ class DTN(nn.Module):
                  window_size = 8, 
                  n_block=[2,2,2,2], 
                  bottleblock = 4, 
-                 num_msab = 1):
+                 num_msab = 2):
         super().__init__()
         self.min_window = window_size * 2 ** len(n_block)
         img_size[0] = (self.min_window - img_size[0] % self.min_window) % self.min_window + img_size[0]
@@ -389,6 +392,7 @@ class DTN(nn.Module):
         pad_h = (self.min_window - h_inp % self.min_window) % self.min_window
         pad_w = (self.min_window - w_inp % self.min_window) % self.min_window
         x = F.pad(x, [0, pad_w, 0, pad_h], mode='reflect')
+        # x = F.pad(x, [0, pad_w, 0, pad_h], mode='constant', value=0.0)
 
         fea = self.embedding(x)
         fea_in = fea.clone()
@@ -532,7 +536,8 @@ class DTN_multi_stage(nn.Module):
         b, c, h_inp, w_inp = x.shape
         pad_h = (self.hb - h_inp % self.hb) % self.hb
         pad_w = (self.wb - w_inp % self.wb) % self.wb
-        x = F.pad(x, [0, pad_w, 0, pad_h], mode='reflect')
+        # x = F.pad(x, [0, pad_w, 0, pad_h], mode='reflect')
+        x = F.pad(x, [0, pad_w, 0, pad_h], mode='constant', value=0.0)
         x = self.conv_in(x)
         h = self.body(x)
         h = self.conv_out(torch.concat([h, x], dim=1))

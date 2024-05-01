@@ -17,6 +17,8 @@ import functools
 from models.gan.HSCNN_Plus import HSCNN_Plus
 from models.gan.SpectralNormalization import *
 from models.gan.attention import *
+from models.gan.SNResNet import *
+from models.gan.SNDenseNet import *
 from torchsummary import summary
 
 class UnetGenerator(nn.Module):
@@ -344,28 +346,77 @@ class ResnetGenerator(nn.Module):
         """Standard forward"""
         return self.model(input)
 
+class SN_Resnet50_Discriminator(nn.Module):
+    def __init__(self, input_nums, *args, **kwargs) -> None:
+        super().__init__()
+        self.model = resnet50(indim=input_nums)
+    def forward(self, input):
+        return self.model(input)
+
+class SN_Resnet101_Discriminator(nn.Module):
+    def __init__(self, input_nums, *args, **kwargs) -> None:
+        super().__init__()
+        self.model = resnet101(indim=input_nums)
+    def forward(self, input):
+        return self.model(input)
+
+class SN_Resnet152_Discriminator(nn.Module):
+    def __init__(self, input_nums, *args, **kwargs) -> None:
+        super().__init__()
+        self.model = resnet152(indim=input_nums)
+    def forward(self, input):
+        return self.model(input)
+
+class SN_Densenet121_Discriminator(nn.Module):
+    def __init__(self, input_nums, *args, **kwargs) -> None:
+        super().__init__()
+        self.model = densenet121(indim=input_nums)
+    def forward(self, input):
+        return self.model(input)
+
+class SN_Densenet161_Discriminator(nn.Module):
+    def __init__(self, input_nums, *args, **kwargs) -> None:
+        super().__init__()
+        self.model = densenet161(indim=input_nums)
+    def forward(self, input):
+        return self.model(input)
+
+class SN_Densenet169_Discriminator(nn.Module):
+    def __init__(self, input_nums, *args, **kwargs) -> None:
+        super().__init__()
+        self.model = densenet169(indim=input_nums)
+    def forward(self, input):
+        return self.model(input)
+
+class SN_Densenet201_Discriminator(nn.Module):
+    def __init__(self, input_nums, *args, **kwargs) -> None:
+        super().__init__()
+        self.model = densenet201(indim=input_nums)
+    def forward(self, input):
+        return self.model(input)
+
 class SN_NLayerDiscriminator(nn.Module):
-    def __init__(self, input_nc, ndf=64, n_layers=3):
+    def __init__(self, input_nums, ndf=64, n_layer=3, *args, **kwargs):
         super(SN_NLayerDiscriminator, self).__init__()
         use_bias = True
         kw = 4
         padw = 1
-        sequence = [SNConv2d(input_nc, ndf, kernel_size=kw, stride=2, padding=padw), nn.ReLU(True)]
+        sequence = [SNConv2d(input_nums, ndf, kernel_size=kw, stride=2, padding=padw), nn.LeakyReLU(0.1, True)]
         nf_mult = 1
         nf_mult_prev = 1
-        for n in range(1, n_layers):  # gradually increase the number of filters
+        for n in range(1, n_layer):  # gradually increase the number of filters
             nf_mult_prev = nf_mult
             nf_mult = min(2 ** n, 8)
             sequence += [
                 SNConv2d(ndf * nf_mult_prev, ndf * nf_mult, kernel_size=kw, stride=2, padding=padw, bias=use_bias),
-                nn.ReLU(True)
+                nn.LeakyReLU(0.1, True)
             ]
 
         nf_mult_prev = nf_mult
-        nf_mult = min(2 ** n_layers, 8)
+        nf_mult = min(2 ** n_layer, 8)
         sequence += [
             SNConv2d(ndf * nf_mult_prev, ndf * nf_mult, kernel_size=kw, stride=1, padding=padw, bias=use_bias),
-            nn.ReLU(True)
+            nn.LeakyReLU(0.1, True)
         ]
 
         sequence += [SNConv2d(ndf * nf_mult, 1, kernel_size=kw, stride=1, padding=padw)]  # output 1 channel prediction map
@@ -483,13 +534,10 @@ class SNResnetDiscriminator(nn.Module):
         super().__init__()
         def ResBlock(input_nums, output_nums, n_blocks = 1):
             layer = []
-            # layer.append(SNConv2d(input_nums, output_nums, kernel_size=(4, 4), stride=(2, 2), padding=(1, 1)))
-            # layer.append(nn.ReLU(True))
-            layer += [nn.PixelUnshuffle(2),
-                      SNConv2d(input_nums * 4, output_nums, 3, 1, 1), 
-                      nn.ReLU(True)]
+            layer += [SNConv2d(input_nums, output_nums, 4, 2, 1), 
+                      nn.LeakyReLU(0.1, True)]
             for i in range(n_blocks):
-                layer += [SNResnetBlock(output_nums, padding_type='reflect', use_dropout=False, use_bias=True), nn.ReLU(True)]
+                layer += [SNResnetBlock(output_nums, padding_type='reflect', use_dropout=False, use_bias=True), nn.LeakyReLU(0.1, True)]
             return layer
         
         model = []
@@ -497,10 +545,10 @@ class SNResnetDiscriminator(nn.Module):
         new_ch = 64
         for i in range(n_layer):
             prev_ch = new_ch
-            new_ch = prev_ch * 2
+            new_ch = min(prev_ch * 2, 512)
             model += ResBlock(prev_ch, new_ch, n_blocks=n_block)
         
-        model += [ SNConv2d(new_ch, 1, kernel_size=(4, 4), stride=(1, 1), padding=(0, 0)),
+        model += [ SNConv2d(new_ch, 1, kernel_size=(4, 4), stride=(1, 1), padding=(1, 1)),
                     nn.AdaptiveAvgPool2d((1, 1)), 
                     nn.Flatten(),
                     ]
@@ -603,23 +651,22 @@ class SNTransformDiscriminator_perceptual(nn.Module):
         output = self.out(output)
         return output.mean(0).view(1), features
 
-class SNTransformDiscriminator(nn.Module):
-    def __init__(self, input_nums = 34, n_layer = 3, n_block = 1, *args, **kwargs):
+class SNTransformerDiscriminator(nn.Module):
+    def __init__(self, input_nums = 34, n_block = [2,4,4], *args, **kwargs):
         super().__init__()
         def ResBlock(dim, input_nums, output_nums, n_blocks = 1):
             layer = []
             layer += [SN_MSAB(input_nums, dim, input_nums // dim, n_blocks)]
-            layer.append(SNConv2d(input_nums, output_nums, kernel_size=(4, 4), stride=(2, 2), padding=(1, 1)))
+            layer.append(SNConv2d(input_nums, output_nums, kernel_size=(4, 4), stride=(2, 2), padding=(1, 1), bias=False))
             layer.append(nn.GELU())
             return layer
         
         model = [SNConv2d(input_nums, input_nums, kernel_size=3, stride=1, padding=1)]
-        model += ResBlock(input_nums, input_nums,  input_nums, n_blocks=n_block)
         new_ch = input_nums
-        for i in range(n_layer):
+        for i in range(len(n_block)):
             prev_ch = new_ch
             new_ch = prev_ch * 2
-            model += ResBlock(input_nums, prev_ch, new_ch, n_blocks=n_block)
+            model += ResBlock(input_nums, prev_ch, new_ch, n_blocks=n_block[i])
         
         model += [ SNConv2d(new_ch, 1, kernel_size=(4, 4), stride=(1, 1), padding=(0, 0)),
                     nn.AdaptiveAvgPool2d((1, 1)), 
@@ -638,7 +685,7 @@ class SNTransformDiscriminator(nn.Module):
             nn.init.constant_(m.weight, 1.0)
 
     def forward(self, x):
-        return self.Net(x).mean(0).view(1)
+        return self.Net(x)
 
 class DenseLayer(nn.Module):
     def __init__(self, dim):
@@ -719,10 +766,7 @@ class Spectral_Discriminator(nn.Module):
         super().__init__()
        
 if __name__ == '__main__':
-    model = wgan_Discriminator(34)
-    # summary(model, (34, 128, 128))
-    print(model)
-    # input = torch.rand([1, 34, 128, 128])
-    # input = input.cuda()
-    # output, features = model(input)
-    # print(output.shape, len(features))
+    model = SNTransformerDiscriminator(34, [2,2,2])
+    summary(model, (34, 128, 128))
+    total_params = sum(p.numel() for p in model.parameters())
+    print(f"Number of parameters: {total_params}")

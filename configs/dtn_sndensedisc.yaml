@@ -4,7 +4,7 @@ params:
   valid_ratio: 0.1
   test_ratio: 0.1
   genconfig:
-    target: models.transformer.DTN
+    target: models.transformer.DTN.DTN
     params:
       in_dim: 6
       out_dim: 31
@@ -14,12 +14,11 @@ params:
       bottleblock: 4
 
   disconfig:
-    # target: models.gan.networks.SN_Discriminator
     target: models.gan.networks.SN_Densenet161_Discriminator
     params:
       input_nums: 37
       n_layer: 3
-      n_block: 1
+      n_block: 2
 
   lossconfig:
     target: models.losses.gan_loss.Loss
@@ -27,7 +26,7 @@ params:
       l1_weight: 10.0
       sam_weight: 0.1
       features_weight: 0.0
-      deltaE_weight: 0.0
+      deltaE_weight: 0.01
       disc_weight: 0.0
       perceptual_weight: 0.0
       threshold: 0
