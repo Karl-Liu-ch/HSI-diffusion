@@ -476,6 +476,7 @@ class Gan():
         self.iteration = checkpoint['iter']
         self.epoch = checkpoint['epoch']
         self.best_mrae = checkpoint['best_mrae']
+        self.loss_min = checkpoint['loss_min']
         self.earlystop.load(checkpoint['early_stop'])
         self.progressive_module.load(checkpoint['progressive_module'])
         try:

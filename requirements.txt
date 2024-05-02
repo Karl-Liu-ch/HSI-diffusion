@@ -6,3 +6,13 @@ scipy
 h5py
 hdf5storage
 tqdm
+scikit-learn
+pandas
+lightning
+omegaconf
+albumentations
+matplotlib
+torch-fidelity
+torchsummary
+timm
+tensorboard
