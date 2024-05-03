@@ -2,6 +2,7 @@ import torch
 import torch.nn as nn
 from taming.modules.losses.vqperceptual import * 
 from utils import instantiate_from_config
+from models.losses.gan_loss import GANLoss, Loss_MRAE, SAMLoss, LossDeltaE
 
 class MRAE(nn.Module):
     def __init__(self):
@@ -18,23 +19,30 @@ class MRAE(nn.Module):
 criterion_mrae = MRAE()
 
 class SpectralNormalizationWDiscriminator(nn.Module):
-    def __init__(self, disc_start, discconfig, logvar_init=0.0, kl_weight=1.0, pixelloss_weight=1.0, 
+    def __init__(self, disc_start, discconfig, l1_weight = 1.0, sam_weight = 1.0, deltaE_weight = 1.0, logvar_init=0.0, kl_weight=1.0, pixelloss_weight=1.0, 
                  disc_factor=1.0, disc_weight=1.0, features_weight=0.01,
-                 perceptual_weight=1.0, disc_conditional=False, *args, **kwargs):
+                 perceptual_weight=1.0, disc_conditional=False, losstype = 'wasserstein', use_features = False, *args, **kwargs):
         super().__init__()
         self.kl_weight = kl_weight
         self.pixel_weight = pixelloss_weight
         self.perceptual_loss = LPIPS().eval()
         self.perceptual_weight = perceptual_weight
+        self.l1_loss = MRAE()
+        self.l1_weight = l1_weight
+        self.sam_loss = SAMLoss()
+        self.sam_weight = sam_weight
+        self.deltaELoss = LossDeltaE()
+        self.deltaE_weight = deltaE_weight
         # output log variance
         self.logvar = nn.Parameter(torch.ones(size=()) * logvar_init)
-
+        self.criterionGAN = GANLoss(losstype)
         self.discriminator = instantiate_from_config(discconfig)
         self.discriminator_iter_start = disc_start
         self.disc_factor = disc_factor
         self.discriminator_weight = disc_weight
         self.disc_conditional = disc_conditional
         self.features_weight = features_weight
+        self.use_features = use_features
 
     def calculate_adaptive_weight(self, nll_loss, g_loss, last_layer=None):
         if last_layer is not None:
@@ -48,12 +56,41 @@ class SpectralNormalizationWDiscriminator(nn.Module):
         d_weight = torch.clamp(d_weight, 0.0, 1e4).detach()
         d_weight = d_weight * self.discriminator_weight
         return d_weight
+    
+    def disc_predict(self, reconstructions, labels):
+        if self.use_features:
+            disc_fake, disc_fake_features = self.discriminator(reconstructions)
+            disc_real, disc_real_features = self.discriminator(labels)
+        else:
+            disc_fake = self.discriminator(reconstructions)
+            disc_real = self.discriminator(labels)
+            disc_real_features = None
+            disc_fake_features = None
+        return disc_real, disc_fake, disc_real_features, disc_fake_features
+
+    def gan_loss(self, reconstructions, labels, cond = None):
+        if cond is None:
+            disc_real, disc_fake, disc_real_features, disc_fake_features = self.disc_predict(reconstructions, labels)
+        else:
+            disc_real, disc_fake, disc_real_features, disc_fake_features = self.disc_predict(torch.concat([reconstructions, cond], dim=1), torch.concat([labels, cond], dim=1))
+        return disc_real, disc_fake, disc_real_features, disc_fake_features
+
+    def recon_loss(self, reconstructions, labels):
+        l1_loss = self.l1_loss(reconstructions, labels)
+        rec_loss = l1_loss * self.l1_weight
+        if self.sam_weight > 0:
+            sam_loss = self.sam_loss(reconstructions, labels)
+            rec_loss += sam_loss * self.sam_weight
+        if self.deltaE_weight > 0:
+            deltaELoss = self.deltaELoss(reconstructions, labels)
+            rec_loss += deltaELoss * self.deltaE_weight
+        return rec_loss
 
     def forward(self, inputs, reconstructions, posteriors, optimizer_idx,
                 global_step, last_layer=None, cond=None, split="train",
                 weights=None):
         # rec_loss = torch.abs(inputs.contiguous() - reconstructions.contiguous())
-        rec_loss = criterion_mrae(reconstructions.contiguous(), inputs.contiguous())
+        rec_loss = self.recon_loss(reconstructions.contiguous(), inputs.contiguous())
         if self.perceptual_weight > 0:
             p_loss = self.perceptual_loss(inputs.contiguous(), reconstructions.contiguous())
             rec_loss = rec_loss + self.perceptual_weight * p_loss
@@ -70,18 +107,12 @@ class SpectralNormalizationWDiscriminator(nn.Module):
         # now the GAN part
         if optimizer_idx == 0:
             # generator update
-            if cond is None:
-                assert not self.disc_conditional
-                disc_fake, fake_features = self.discriminator(reconstructions.contiguous())
-                disc_real, real_features = self.discriminator(inputs.contiguous())
-            else:
-                assert self.disc_conditional
-                disc_fake, fake_features = self.discriminator(torch.concat([reconstructions.contiguous(), cond.contiguous()], dim=1))
-                disc_real, real_features = self.discriminator(torch.concat([inputs.contiguous(), cond.contiguous()], dim=1))
+            disc_real, disc_fake, disc_real_features, disc_fake_features = self.gan_loss(reconstructions.contiguous(), inputs.contiguous(), cond)
             feature_loss = 0
-            for k in range(len(fake_features)):
-                feature_loss += F.mse_loss(real_features[k].detach(), fake_features[k])
-            g_loss = - disc_fake.mean()
+            if self.use_features and self.features_weight > 0:
+                for k in range(len(disc_fake_features)):
+                    feature_loss += F.mse_loss(disc_real_features[k].detach(), disc_fake_features[k])
+            g_loss = self.criterionGAN(disc_fake, target_is_real=True)
 
             if self.disc_factor > 0.0:
                 try:
@@ -106,17 +137,14 @@ class SpectralNormalizationWDiscriminator(nn.Module):
 
         if optimizer_idx == 1:
             # second pass for discriminator update
-            if cond is None:
-                disc_real, real_features = self.discriminator(inputs.contiguous().detach())
-                disc_fake, fake_features = self.discriminator(reconstructions.contiguous().detach())
-            else:
-                disc_fake, fake_features = self.discriminator(torch.concat([reconstructions, cond], dim=1).detach())
-                disc_real, real_features = self.discriminator(torch.concat([inputs, cond], dim=1).detach())
-
+            disc_real, disc_fake, disc_real_features, disc_fake_features = self.gan_loss(reconstructions.contiguous().detach(), inputs.contiguous().detach(), cond)
             feature_loss = 0
-            for k in range(len(fake_features)):
-                feature_loss += F.mse_loss(real_features[k], fake_features[k])
-            d_loss = disc_fake.mean() - disc_real.mean() - feature_loss * self.features_weight
+            if self.use_features and self.features_weight > 0:
+                for k in range(len(disc_fake_features)):
+                    feature_loss += F.mse_loss(disc_real_features[k], disc_fake_features[k])
+            disc_real = self.criterionGAN(disc_real, target_is_real=True)
+            disc_fake = self.criterionGAN(disc_fake, target_is_real=False)
+            d_loss = disc_fake + disc_real - feature_loss * self.features_weight
 
             disc_factor = adopt_weight(self.disc_factor, global_step, threshold=self.discriminator_iter_start)
             d_loss *= disc_factor

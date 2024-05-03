@@ -17,7 +17,7 @@ params:
     target: models.gan.networks.SNTransformerDiscriminator
     params:
       input_nums: 37
-      n_block: [2,4,4]
+      n_block: [2,2,2]
 
   lossconfig:
     target: models.losses.gan_loss.Loss

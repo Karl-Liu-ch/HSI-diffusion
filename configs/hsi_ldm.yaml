@@ -43,7 +43,7 @@ model:
 
     first_stage_config:
       base_learning_rate: 4.5e-6
-      target: models.vae.vae.FirstStageAutoencoderKL
+      target: models.vae.vae.AutoencoderKL
       params:
         image_key: label
         cond_key: cond
@@ -68,7 +68,7 @@ model:
                 input_nums: 34
 
         condconfig: 
-          target: models.vae.vae.CondAutoencoderKL
+          target: models.vae.vae.AutoencoderKL
           params:
             image_key: cond
             monitor: "val/mrae_avg"
@@ -153,22 +153,22 @@ data:
     batch_size: 1
     num_workers: 32
     train:
-      target: dataset.datasets.Train_Dataset
+      target: dataset.datasets.TrainDataset
       params:
         data_root: /work3/s212645/Spectral_Reconstruction/
         crop_size: 256
         valid_ratio: 0.1
         test_ratio: 0.1
-        aug: True
+        arg: True
         datanames: ['ARAD/']
     validation:
-      target: dataset.datasets.Valid_Dataset
+      target: dataset.datasets.ValidDataset
       params:
         data_root: /work3/s212645/Spectral_Reconstruction/
         crop_size: 256
         valid_ratio: 0.1
         test_ratio: 0.1
-        aug: True
+        arg: True
         datanames: ['ARAD/']
 
 lightning:

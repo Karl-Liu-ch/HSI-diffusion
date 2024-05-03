@@ -1,6 +1,6 @@
 path: /work3/s212645/Spectral_Reconstruction/checkpoint/vae/
 model:
-  target: models.vae.vae.CondAutoencoderKL
+  target: models.vae.vae.AutoencoderKL
   params:
     image_key: cond
     monitor: "val/mrae_avg"
@@ -13,11 +13,13 @@ model:
         kl_weight: 0.000001
         pixelloss_weight: 10.0
         disc_weight: 0.5
-        features_weight: 0.01
+        features_weight: 0.0
         perceptual_weight: 1.0
+        deltaE_weight: 0.0
+        sam_weight: 0.0
         disc_conditional: False
         discconfig: 
-          target: models.gan.networks.SN_Discriminator_perceptualLoss
+          target: models.gan.networks.SN_Densenet201_Discriminator
           params:
             input_nums: 3
 
@@ -37,25 +39,25 @@ model:
 data:
   target: dataset.base.DataModuleFromConfig
   params:
-    batch_size: 8
+    batch_size: 4
     num_workers: 32
     train:
-      target: dataset.datasets.Train_Dataset
+      target: dataset.datasets.TrainDataset
       params:
         data_root: /work3/s212645/Spectral_Reconstruction/
         crop_size: 256
         valid_ratio: 0.1
         test_ratio: 0.1
-        aug: True
+        arg: True
         datanames: ['ARAD/']
     validation:
-      target: dataset.datasets.Valid_Dataset
+      target: dataset.datasets.ValidDataset
       params:
         data_root: /work3/s212645/Spectral_Reconstruction/
-        crop_size: 256
+        crop_size: 512
         valid_ratio: 0.1
         test_ratio: 0.1
-        aug: True
+        arg: False
         datanames: ['ARAD/']
 
 lightning:

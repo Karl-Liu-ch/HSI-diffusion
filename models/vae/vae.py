@@ -64,6 +64,8 @@ class AutoencoderKL(l.LightningModule):
             self.register_buffer("colorize", torch.randn(3, colorize_nlabels, 1, 1))
         if monitor is not None:
             self.monitor = monitor
+        self.automatic_optimization = False
+        self.min_window = 128
 
     def init_from_ckpt(self, path, ignore_keys=list()):
         sd = torch.load(path, map_location="cpu")["state_dict"]
@@ -80,61 +82,87 @@ class AutoencoderKL(l.LightningModule):
         h = self.encoder(x)
         moments = self.quant_conv(h)
         posterior = DiagonalGaussianDistribution(moments)
-        return posterior
+        features = None
+        return posterior, features
 
-    def decode(self, z):
+    def decode(self, z, features):
         z = self.post_quant_conv(z)
         dec = self.decoder(z)
         return dec
 
     def forward(self, input, sample_posterior=True):
-        posterior = self.encode(input)
+        b, c, h_inp, w_inp = input.shape
+        pad_h = (self.min_window - h_inp % self.min_window) % self.min_window
+        pad_w = (self.min_window - w_inp % self.min_window) % self.min_window
+        input = F.pad(input, [0, pad_w, 0, pad_h], mode='reflect')
+
+        posterior, features = self.encode(input)
         if sample_posterior:
             z = posterior.sample()
         else:
             z = posterior.mode()
-        dec = self.decode(z)
-        return dec, posterior
+        dec = self.decode(z, features)
+        return dec[:, :, :h_inp, :w_inp], posterior, features
 
     def get_input(self, batch, k):
         x = batch[k]
         return x
 
-    def training_step(self, batch, batch_idx, optimizer_idx):
-        inputs = self.get_input(batch, self.image_key)
-        reconstructions, posterior = self(inputs)
+    def training_step(self, batch, batch_idx):
+        opt_g, opt_disc = self.optimizers()
+        inputs = batch[self.image_key]
+        inputs = Variable(inputs)
 
-        if optimizer_idx == 0:
-            # train encoder+decoder+logvar
-            aeloss, log_dict_ae = self.loss(inputs, reconstructions, posterior, optimizer_idx, self.global_step,
-                                            last_layer=self.get_last_layer(), split="train")
-            self.log("aeloss", aeloss, prog_bar=True, logger=True, on_step=True, on_epoch=True)
-            self.log_dict(log_dict_ae, prog_bar=False, logger=True, on_step=True, on_epoch=False)
-            return aeloss
+        reconstructions, posterior, condfeatures = self(inputs)
 
-        if optimizer_idx == 1:
+        self.toggle_optimizer(opt_g)
+        aeloss, log_dict_ae = self.loss(inputs, reconstructions, posterior, 0, self.global_step,
+                                        last_layer=self.get_last_layer(), split="train")
+        self.log("aeloss", aeloss, prog_bar=True, logger=True, on_step=True, on_epoch=True)
+        self.log_dict(log_dict_ae, prog_bar=False, logger=True, on_step=True, on_epoch=False)
+        self.manual_backward(aeloss)
+        opt_g.step()
+        opt_g.zero_grad()
+        self.untoggle_optimizer(opt_g)
+        
             # train the discriminator
-            discloss, log_dict_disc = self.loss(inputs, reconstructions, posterior, optimizer_idx, self.global_step,
-                                                last_layer=self.get_last_layer(), split="train")
+        self.toggle_optimizer(opt_disc)
+        discloss, log_dict_disc = self.loss(inputs, reconstructions, posterior, 1, self.global_step,
+                                            last_layer=self.get_last_layer(), split="train")
 
-            self.log("discloss", discloss, prog_bar=True, logger=True, on_step=True, on_epoch=True)
-            self.log_dict(log_dict_disc, prog_bar=False, logger=True, on_step=True, on_epoch=False)
-            return discloss
+        self.log("discloss", discloss, prog_bar=True, logger=True, on_step=True, on_epoch=True)
+        self.log_dict(log_dict_disc, prog_bar=False, logger=True, on_step=True, on_epoch=False)
+        self.manual_backward(discloss)
+        opt_disc.step()
+        opt_disc.zero_grad()
+        self.untoggle_optimizer(opt_disc)
 
     def validation_step(self, batch, batch_idx):
-        inputs = self.get_input(batch, self.image_key)
-        reconstructions, posterior = self(inputs)
-        aeloss, log_dict_ae = self.loss(inputs, reconstructions, posterior, 0, self.global_step,
-                                        last_layer=self.get_last_layer(), split="val")
-
-        discloss, log_dict_disc = self.loss(inputs, reconstructions, posterior, 1, self.global_step,
-                                            last_layer=self.get_last_layer(), split="val")
-
-        self.log("val/rec_loss", log_dict_ae["val/rec_loss"])
-        self.log_dict(log_dict_ae)
-        self.log_dict(log_dict_disc)
+        if batch_idx == 0:
+            self.losses_mrae = AverageMeter()
+            self.losses_rmse = AverageMeter()
+            self.losses_psnr = AverageMeter()
+            self.losses_sam = AverageMeter()
+        labels = batch[self.image_key]
+        labels = Variable(labels)
+        output, posterior, condfeatures = self(labels)
+        loss_mrae = criterion_mrae(output, labels).detach()
+        loss_rmse = criterion_rmse(output, labels).detach()
+        loss_psnr = criterion_psnr(output, labels).detach()
+        loss_sam = criterion_sam(output, labels).detach()
+        criterion_sam.reset()
+        criterion_psnr.reset()
+        self.log_dict({'mrae': loss_mrae, 'rmse': loss_rmse, 'psnr': loss_psnr, 'sam': loss_sam})
+        self.losses_mrae.update(loss_mrae.data)
+        self.losses_rmse.update(loss_rmse.data)
+        self.losses_psnr.update(loss_psnr.data)
+        self.losses_sam.update(loss_sam.data)
         return self.log_dict
-
+    
+    def on_validation_epoch_end(self):
+        print(f'validation: MRAE: {self.losses_mrae.avg}, RMSE: {self.losses_rmse.avg}, PSNR: {self.losses_psnr.avg}, SAM: {self.losses_sam.avg}.')
+        self.log_dict({'val/mrae_avg': self.losses_mrae.avg, 'val/rmse_avg': self.losses_rmse.avg, 'val/psnr_avg': self.losses_psnr.avg, 'val/sam_avg': self.losses_sam.avg})
+    
     def configure_optimizers(self):
         lr = self.learning_rate
         opt_ae = torch.optim.Adam(list(self.encoder.parameters())+
@@ -287,7 +315,6 @@ class FirstStageAutoencoderKL(AutoencoderKL):
             z = posterior.sample()
         else:
             z = posterior.mode()
-        # h, condfeatures = self.cond_model.encode(cond)
         h, condfeatures = self.cond_encode(cond)
         dec = self.decode(z, condfeatures, h)
         return dec, posterior

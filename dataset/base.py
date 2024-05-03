@@ -61,11 +61,12 @@ class DataModuleFromConfig(l.LightningDataModule):
 
     def _val_dataloader(self):
         return DataLoader(self.datasets["validation"],
-                          batch_size=self.batch_size,
+                          batch_size=1,
+                        #   batch_size=self.batch_size,
                           num_workers=self.num_workers)
 
     def _test_dataloader(self):
-        return DataLoader(self.datasets["test"], batch_size=self.batch_size,
+        return DataLoader(self.datasets["test"], batch_size=1,
                           num_workers=self.num_workers)
 
 # def custom_collate(batch):

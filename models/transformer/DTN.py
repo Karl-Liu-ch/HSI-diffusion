@@ -278,14 +278,14 @@ class DTNBlock(nn.Module):
 class DownSample(nn.Module):
     def __init__(self, inchannel, outchannel):
         super().__init__()
-        self.model = nn.Sequential(
-            nn.Conv2d(inchannel, outchannel, kernel_size=4, stride=2, padding=1, bias=False),
-            nn.BatchNorm2d(outchannel), 
-            nn.GELU()
-        )
         # self.model = nn.Sequential(
-        #     nn.Conv2d(inchannel, outchannel, kernel_size=4, stride=2, padding=1, bias=False)
+        #     nn.Conv2d(inchannel, outchannel, kernel_size=4, stride=2, padding=1, bias=False),
+        #     nn.BatchNorm2d(outchannel), 
+        #     nn.GELU()
         # )
+        self.model = nn.Sequential(
+            nn.Conv2d(inchannel, outchannel, kernel_size=4, stride=2, padding=1, bias=False)
+        )
         
     def forward(self, x):
         return self.model(x)
@@ -298,17 +298,15 @@ class UpSample(nn.Module):
         #     nn.BatchNorm2d(outchannel), 
         #     nn.GELU()
         # )
-        # self.model = nn.Sequential(
-        #     nn.ConvTranspose2d(inchannel, outchannel, stride=2, kernel_size=2, padding=0, output_padding=0),
-        #     nn.Conv2d(inchannel, outchannel, 1, 1, bias=False),
-        # )
         self.model = nn.Sequential(
-            nn.Conv2d(inchannel, inchannel * 4, kernel_size=1, stride=1, padding=0, bias=False), 
-            # nn.LeakyReLU(0.1, True), 
-            nn.GELU(), 
-            nn.PixelShuffle(2),
-            nn.Conv2d(inchannel, outchannel, kernel_size=3, stride=1, padding=1, bias=False), 
+            nn.ConvTranspose2d(inchannel, outchannel, stride=2, kernel_size=2, padding=0, output_padding=0),
         )
+        # self.model = nn.Sequential(
+        #     nn.Conv2d(inchannel, inchannel * 4, kernel_size=1, stride=1, padding=0, bias=False), 
+        #     nn.GELU(), 
+        #     nn.PixelShuffle(2),
+        #     nn.Conv2d(inchannel, outchannel, kernel_size=3, stride=1, padding=1, bias=False), 
+        # )
         
     def forward(self, x):
         return self.model(x)
