@@ -18,6 +18,7 @@ model:
         deltaE_weight: 0.0
         sam_weight: 0.0
         disc_conditional: False
+        losstype: wasserstein
         discconfig: 
           target: models.gan.networks.SN_Densenet201_Discriminator
           params:

@@ -20,6 +20,7 @@ model:
         features_weight: 0.0
         perceptual_weight: 0
         disc_conditional: True
+        losstype: wasserstein
         discconfig: 
           target: models.gan.networks.SN_Densenet201_Discriminator
           params:

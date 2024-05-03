@@ -40,6 +40,27 @@ if __name__ == '__main__':
             model.load_checkpoint()
         except Exception as ex:
             print(ex)
+    run = True
+    while run:
+        match opt.mode:
+            case 'train':
+                # try:
+                #     model.load_checkpoint()
+                # except Exception as ex:
+                #     print(ex)
+                model.train()
+                opt.mode = 'test'
+            case 'test':
+                model.load_checkpoint(best=True)
+                model.test(modelname)
+                opt.mode = 'testfull'
+            case 'testfull':
+                model.load_checkpoint(best=True)
+                model.test_full_resol(modelname)
+                opt.mode = 'stop'
+            case _:
+                run = False
+
     if opt.mode == 'train':
         # try:
         #     model.load_checkpoint()
