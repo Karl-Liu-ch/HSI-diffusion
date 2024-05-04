@@ -20,7 +20,7 @@ params:
   lossconfig:
     target: models.losses.gan_loss.Loss
     params:
-      l1_weight: 100.0
+      l1_weight: 10.0
       sam_weight: 0.0
       features_weight: 0.0
       disc_weight: 0.0

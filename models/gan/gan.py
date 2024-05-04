@@ -62,8 +62,8 @@ class Gan():
                  progressive_train = True,
                    **kargs):
         super().__init__()
-        self.earlystop = EarlyStopper(patience=5, min_delta=1e-2, start_epoch=10, gl_weight=1.4)
-        self.progressive_module = EarlyStopper(patience=4, min_delta=1e-3, start_epoch=5, gl_weight=1.4)
+        self.earlystop = EarlyStopper(patience=10, min_delta=1e-2, start_epoch=10, gl_weight=1.4)
+        self.progressive_module = EarlyStopper(patience=10, min_delta=1e-2, start_epoch=10, gl_weight=1.4)
         self.image_key = image_key
         self.cond_key = cond_key
         self.n_critic = n_critic
@@ -106,9 +106,9 @@ class Gan():
         
         # self.optimG = optim.Adam(self.G.parameters(), lr=learning_rate, betas=(0.9, 0.999), eps=1e-8)
         # self.optimD = optim.Adam(self.D.parameters(), lr=learning_rate, betas=(0.9, 0.999), eps=1e-8)
-        # self.optimG = optim.Adam(self.G.parameters(), lr=learning_rate, betas=(0.5, 0.9), eps=1e-14)
-        self.optimG = optim.AdamW(self.G.parameters(), lr=learning_rate, betas=(0.5, 0.9), eps=1e-8, weight_decay=0.05)
-        self.optimD = optim.Adam(self.D.parameters(), lr=learning_rate, betas=(0.5, 0.9), eps=1e-8)
+        # self.optimG = optim.AdamW(self.G.parameters(), lr=learning_rate, betas=(0.5, 0.9), eps=1e-8, weight_decay=0.05)
+        self.optimG = optim.Adam(self.G.parameters(), lr=learning_rate, betas=(0.5, 0.9), eps=1e-14)
+        self.optimD = optim.Adam(self.D.parameters(), lr=learning_rate, betas=(0.5, 0.9), eps=1e-12)
         self.root = ckpath
         if not opt.resume:
             shutil.rmtree(self.root + 'runs/', ignore_errors=True)
@@ -194,7 +194,7 @@ class Gan():
                 # train D
                 # for _ in range(self.n_critic):
                 self.optimD.zero_grad()
-                loss_d, log_d = self.loss(self.D, x_fake, label, cond, self.iteration, mode = 'dics', last_layer = self.get_last_layer())
+                loss_d, log_d = self.loss(self.D, x_fake, label, cond, self.epoch, mode = 'dics', last_layer = self.get_last_layer())
                 loss_d.backward()
                 self.optimD.step()
                 
@@ -203,7 +203,7 @@ class Gan():
                 # x_fake = self.G(z)
                 self.optimG.zero_grad()
                 lrG = self.optimG.param_groups[0]['lr']
-                loss_G, log_g = self.loss(self.D, x_fake, label, cond, self.iteration, mode = 'gen', last_layer = self.get_last_layer())
+                loss_G, log_g = self.loss(self.D, x_fake, label, cond, self.epoch, mode = 'gen', last_layer = self.get_last_layer())
                 loss_G.backward()
                 self.optimG.step()
                 
@@ -245,11 +245,12 @@ class Gan():
                 "Test RMSE: %.9f, Test PSNR: %.9f, SAM: %.9f, SID: %.9f " % (self.iteration, 
                                                                 self.epoch, lrG, 
                                                                 losses.avg, mrae_loss, rmse_loss, psnr_loss, sam_loss, sid_loss))
-            if self.progressive_module.early_stop(mrae_loss, losses.avg) and self.progressive_train and  self.patch_size <= 512:
+            if self.progressive_module.early_stop(mrae_loss, losses.avg) and self.progressive_train and  self.patch_size < 512:
                 self.progressive_training()
                 self.progressive_module.reset()
                 self.earlystop.reset()
             if self.earlystop.early_stop(mrae_loss, losses.avg):
+                print('early stopped because no improvement in validation')
                 break
             if mrae_loss > 100.0: 
                 break
@@ -335,9 +336,9 @@ class Gan():
             # os.mkdir('/work3/s212645/Spectral_Reconstruction/RealHyperSpectrum/' + modelname + '/')
         except:
             pass
-        test_data = TestDataset(data_root=opt.data_root, crop_size=opt.patch_size, valid_ratio = 0.1, test_ratio=0.1, datanames = datanames)
+        test_data = TestDataset(data_root=opt.data_root, crop_size=1e8, valid_ratio = 0.1, test_ratio=0.1, datanames = datanames)
         print("Test set samples: ", len(test_data))
-        test_loader = DataLoader(dataset=test_data, batch_size=opt.batch_size, shuffle=False, num_workers=32, pin_memory=True)
+        test_loader = DataLoader(dataset=test_data, batch_size=2, shuffle=False, num_workers=32, pin_memory=True)
         self.G.eval()
         losses_mrae = AverageMeter()
         losses_rmse = AverageMeter()
@@ -436,6 +437,7 @@ class Gan():
                 'optimD': self.optimD.state_dict(),
                 'early_stop':self.earlystop.save(),
                 'progressive_module': self.progressive_module.save(),
+                'patch_size': self.patch_size,
             }
         else:
             state = {
@@ -449,6 +451,7 @@ class Gan():
                 'optimD': self.optimD.state_dict(),
                 'early_stop':self.earlystop.save(),
                 'progressive_module': self.progressive_module.save(),
+                'patch_size': self.patch_size,
             }
         if best: 
             name = 'net_epoch_best.pth'
@@ -477,6 +480,7 @@ class Gan():
         self.epoch = checkpoint['epoch']
         self.best_mrae = checkpoint['best_mrae']
         self.loss_min = checkpoint['loss_min']
+        self.patch_size = checkpoint['patch_size']
         self.earlystop.load(checkpoint['early_stop'])
         self.progressive_module.load(checkpoint['progressive_module'])
         try:

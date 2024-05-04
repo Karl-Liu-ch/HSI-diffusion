@@ -1,0 +1,17 @@
+target: models.transformer.basemodel.TrainModel
+params:
+  ckpath: /work3/s212645/Spectral_Reconstruction/checkpoint/DTN/
+  image_key: 'label'
+  cond_key: 'cond'
+  valid_ratio: 0.1
+  test_ratio: 0.1
+  genconfig:
+    target: models.transformer.DTN
+    params:
+      in_dim: 3
+      out_dim: 31
+      img_size: [128, 128]
+      window_size: 8
+      n_block: [2, 4]
+      bottleblock: 4 
+      num_msab: 1

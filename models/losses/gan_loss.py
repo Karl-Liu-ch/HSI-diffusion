@@ -247,7 +247,7 @@ class Loss(nn.Module):
         return disc_real, disc_fake, disc_real_features, disc_fake_features
 
     def adopt_factor(self, global_step):
-        if global_step > self.threshold:
+        if global_step >= self.threshold:
             disc_factor = 1.0
         else:
             disc_factor = 0.0

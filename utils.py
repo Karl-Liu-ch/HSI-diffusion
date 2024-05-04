@@ -48,8 +48,6 @@ class EarlyStopper:
         self.epoch += 1
         if self.epoch < self.start_epoch or (train_loss / validation_loss) > 1.0:
             return False
-        # elif ((validation_loss / train_loss) > self.gl_weight) and (self.epoch > self.start_epoch):
-        #     return True
         else:
             if validation_loss < self.min_validation_loss:
                 self.min_validation_loss = validation_loss

@@ -59,8 +59,8 @@ class TrainModel():
         super().__init__()
         self.image_key = image_key
         self.cond_key = cond_key
-        self.earlystop = EarlyStopper(patience=5, min_delta=1e-2, start_epoch=40, gl_weight=1.2)
-        self.progressive_module = EarlyStopper(patience=4, min_delta=1e-3, start_epoch=0, gl_weight=1.2)
+        self.earlystop = EarlyStopper(patience=10, min_delta=1e-2, start_epoch=40, gl_weight=1.2)
+        self.progressive_module = EarlyStopper(patience=10, min_delta=1e-2, start_epoch=40, gl_weight=1.2)
         self.n_critic = n_critic
         self.multiGPU = multigpu
         self.valid_ratio = valid_ratio
@@ -180,7 +180,7 @@ class TrainModel():
                                                                 losses.avg, mrae_loss, rmse_loss, psnr_loss, sam_loss, sid_loss))
             # if self.progressive_module.early_stop(mrae_loss, losses.avg, self.epoch):
             #     self.progressive_training()
-            if self.earlystop.early_stop(mrae_loss, losses.avg, self.epoch):
+            if self.earlystop.early_stop(mrae_loss, losses.avg):
                 break
             if mrae_loss > 100.0: 
                 break
