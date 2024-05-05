@@ -423,7 +423,8 @@ class DTN(nn.Module):
         return self.mapping.weight
 
 class DTN_multi_stage(nn.Module):
-    def __init__(self, *, in_dim=3, out_dim=31, n_feat=31, stage=3, img_size=[128, 128], window = 32, num_msab = 1, **kargs):
+    def __init__(self, *, in_dim=3, out_dim=31, n_feat=31, stage=3, img_size=[128, 128], 
+                n_block=[1,1], bottleblock = 1, window = 32, num_msab = 1, **kargs):
         super(DTN_multi_stage, self).__init__()
         self.stage = stage
         self.conv_in = nn.Conv2d(in_dim, n_feat, kernel_size=3, padding=(3 - 1) // 2,bias=False)
@@ -434,8 +435,8 @@ class DTN_multi_stage(nn.Module):
                             out_dim=out_dim,
                             img_size = [img_size[0]+pad_h, img_size[1]+pad_w], 
                             window_size = 8, 
-                            n_block=[1,1], 
-                            bottleblock = 1,
+                            n_block=n_block, 
+                            bottleblock = bottleblock,
                             num_msab = num_msab) for _ in range(stage)]
         self.body = nn.Sequential(*modules_body)
         self.conv_out = nn.Conv2d(n_feat * 2, out_dim, kernel_size=3, padding=(3 - 1) // 2,bias=False)

@@ -3,6 +3,8 @@ import torch
 import os
 from omegaconf import OmegaConf
 import argparse
+from torch.utils.data import DataLoader
+from dataset.datasets import TestDataset
 parser = argparse.ArgumentParser(description="Spectral Recovery Toolbox")
 parser.add_argument('--method', type=str, default='sncwgan_dtn')
 parser.add_argument('--datanames', type=list, default=['ARAD/'])
@@ -56,7 +58,15 @@ if __name__ == '__main__':
                 opt.mode = 'testfull'
             case 'testfull':
                 model.load_checkpoint(best=True)
-                model.test_full_resol(modelname)
+                test_data_arad = TestDataset(data_root=opt.data_root, crop_size=1e8, valid_ratio = 0.1, test_ratio=0.1, datanames=['ARAD/'], cave=False)
+                test_data_bgu = TestDataset(data_root=opt.data_root, crop_size=1e8, valid_ratio = 0.1, test_ratio=0.1, datanames=['BGU/'], cave=False)
+                test_data_cave = TestDataset(data_root=opt.data_root, crop_size=1e8, valid_ratio = 0, test_ratio=1, datanames=['CAVE/'], cave=False)
+                test_loader_arad = DataLoader(dataset=test_data_arad, batch_size=1, shuffle=False, num_workers=32, pin_memory=True)
+                test_loader_bgu = DataLoader(dataset=test_data_bgu, batch_size=1, shuffle=False, num_workers=32, pin_memory=True)
+                test_loader_cave = DataLoader(dataset=test_data_cave, batch_size=1, shuffle=False, num_workers=32, pin_memory=True)
+
+                test_loaders = [test_loader_arad, test_loader_bgu, test_loader_cave]
+                model.test_full_resol(modelname, test_loaders)
                 opt.mode = 'stop'
             case _:
                 run = False

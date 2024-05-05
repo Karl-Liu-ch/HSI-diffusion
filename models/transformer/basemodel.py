@@ -55,12 +55,14 @@ class TrainModel():
                  n_critic = 5,
                  multigpu = False, 
                  noise = False, 
-                 use_feature = True, **kargs):
+                 use_feature = True, 
+                 progressive_train = False, **kargs):
         super().__init__()
         self.image_key = image_key
         self.cond_key = cond_key
         self.earlystop = EarlyStopper(patience=10, min_delta=1e-2, start_epoch=40, gl_weight=1.2)
         self.progressive_module = EarlyStopper(patience=10, min_delta=1e-2, start_epoch=40, gl_weight=1.2)
+        self.progressive_train = progressive_train
         self.n_critic = n_critic
         self.multiGPU = multigpu
         self.valid_ratio = valid_ratio
@@ -72,7 +74,10 @@ class TrainModel():
         if self.multiGPU:
             self.G = nn.DataParallel(self.G)
         self.G.cuda()
-        summary(self.G, (3, 128, 128))
+        if cond_key == 'cond':
+            summary(self.G, (3, 128, 128))
+        elif cond_key == 'ycrcb':
+            summary(self.G, (6, 128, 128))
         self.noise = noise
         self.datanames = datanames
         self.epoch = 0
@@ -178,22 +183,30 @@ class TrainModel():
                 "Test RMSE: %.9f, Test PSNR: %.9f, SAM: %.9f, SID: %.9f " % (self.iteration, 
                                                                 self.epoch, lrG, 
                                                                 losses.avg, mrae_loss, rmse_loss, psnr_loss, sam_loss, sid_loss))
-            # if self.progressive_module.early_stop(mrae_loss, losses.avg, self.epoch):
-            #     self.progressive_training()
+            if self.progressive_module.early_stop(mrae_loss, losses.avg) and self.progressive_train and  self.patch_size < 512:
+                self.progressive_training()
+                self.progressive_module.reset()
+                self.earlystop.reset()
             if self.earlystop.early_stop(mrae_loss, losses.avg):
                 break
             if mrae_loss > 100.0: 
                 break
             self.epoch += 1
 
-    # def progressive_training(self):
-    #     self.patch_size = self.patch_size * 2
-    #     self.train_data = Train_Dataset(data_root=self.data_root, crop_size=self.patch_size, valid_ratio = self.valid_ratio, test_ratio=self.test_ratio, datanames = self.datanames, stride=self.patch_size)
-    #     print(f"Iteration per epoch: {len(self.train_data)}")
-    #     if self.batch_size > 1:
-    #         self.batch_size = self.batch_size // 4
-    #     else:
-    #         self.batch_size = 1
+    def progressive_training(self):
+        self.optimG = optim.Adam(self.G.parameters(), lr=4e-5, betas=(0.5, 0.9), eps=1e-14)
+        self.schedulerG = torch.optim.lr_scheduler.CosineAnnealingLR(self.optimG, self.total_iteration, eta_min=1e-6)
+        self.patch_size = self.patch_size * 2
+        if self.patch_size > 482:
+            arg = False
+        else:
+            arg = True
+        self.train_data = TrainDataset(data_root=self.data_root, crop_size=self.patch_size, valid_ratio = 0.1, test_ratio=0.1, arg=arg, datanames = self.datanames, stride=self.patch_size)
+        print(f"Iteration per epoch: {len(self.train_data)}")
+        if self.batch_size > 4:
+            self.batch_size = self.batch_size // 4
+        else:
+            self.batch_size = 1
 
     def hsi2rgb(self, hsi):
         rgb = self.deltaE_criterion.model_hs2rgb(hsi)
@@ -239,7 +252,7 @@ class TrainModel():
         self.save_metrics()
         return losses_mrae.avg, losses_rmse.avg, losses_psnr.avg, losses_sam.avg, losses_sid.avg
     
-    def test(self, modelname, datanames = ['BGU/', 'ARAD/']):
+    def test(self, modelname):
         try: 
             os.mkdir('/work3/s212645/Spectral_Reconstruction/FakeHyperSpectrum/')
             os.mkdir('/work3/s212645/Spectral_Reconstruction/RealHyperSpectrum/')
@@ -252,9 +265,9 @@ class TrainModel():
             # os.mkdir('/work3/s212645/Spectral_Reconstruction/RealHyperSpectrum/' + modelname + '/')
         except:
             pass
-        test_data = TestDataset(data_root=opt.data_root, crop_size=opt.patch_size, valid_ratio = 0.1, test_ratio=0.1, datanames = datanames)
+        test_data = TestDataset(data_root=opt.data_root, crop_size=1e8, valid_ratio = 0.1, test_ratio=0.1, datanames = self.datanames)
         print("Test set samples: ", len(test_data))
-        test_loader = DataLoader(dataset=test_data, batch_size=opt.batch_size, shuffle=False, num_workers=32, pin_memory=True)
+        test_loader = DataLoader(dataset=test_data, batch_size=2, shuffle=False, num_workers=32, pin_memory=True)
         self.G.eval()
         losses_mrae = AverageMeter()
         losses_rmse = AverageMeter()
@@ -313,6 +326,7 @@ class TrainModel():
         f.write(modelname+':\n')
         f.write(f'MRAE:{losses_mrae.avg}, RMSE: {losses_rmse.avg}, PSNR:{losses_psnr.avg}, SAM: {losses_sam.avg}, SID: {losses_sid.avg}, FID: {losses_fid.avg}, SSIM: {losses_ssim.avg}, PSNRRGB: {losses_psnrrgb.avg}')
         f.write('\n')
+        f.close()
         return losses_mrae.avg, losses_rmse.avg, losses_psnr.avg, losses_sam.avg, losses_sid.avg, losses_fid.avg, losses_ssim.avg, losses_psnrrgb.avg
 
     def save_metrics(self):
@@ -382,7 +396,7 @@ class TrainModel():
             pass
         print("pretrained model loaded, iteration: ", self.iteration)
 
-    def test_full_resol(self, modelname):
+    def test_full_resol(self, modelname, test_loaders):
         try:
             os.mkdir('/work3/s212645/Spectral_Reconstruction/FakeHyperSpectrum/' + modelname + '/FullResol/')
         except:
@@ -398,58 +412,56 @@ class TrainModel():
         losses_sid = AverageMeter()
         losses_fid = AverageMeter()
         losses_ssim = AverageMeter()
-        test_data = TestFullDataset(data_root=self.data_root, crop_size=self.patch_size, valid_ratio = 0.1, test_ratio=0.1)
-        print("Test set samples: ", len(test_data))
-        test_loader = DataLoader(dataset=test_data, batch_size=1, shuffle=False, num_workers=32, pin_memory=True)
         count = 0
-        for i, batch in enumerate(tqdm(test_loader)):
-            label, cond= self.get_input(batch)
-            rgb_gt = batch['cond'].cuda()
-            with torch.no_grad():
-                output = self.G(cond)
-                rgbs = []
-                reals = []
-                for j in range(output.shape[0]):
-                    mat = {}
-                    mat['cube'] = np.transpose(label[j,:,:,:].cpu().numpy(), [1,2,0])
-                    mat['rgb'] = np.transpose(rgb_gt[j,:,:,:].cpu().numpy(), [1,2,0])
-                    real = np.transpose(rgb_gt[j,:,:,:].cpu().numpy(), [1,2,0])
-                    real = (real - real.min()) / (real.max()-real.min())
-                    mat['rgb'] = real
-                    rgb = SaveSpectral(output[j,:,:,:], count, root='/work3/s212645/Spectral_Reconstruction/FakeHyperSpectrum/' + modelname + '/FullResol/')
-                    rgbs.append(rgb)
-                    reals.append(real)
-                    count += 1
-                loss_mrae = criterion_mrae(output, label)
-                loss_rmse = criterion_rmse(output, label)
-                loss_psnr = criterion_psnr(output, label)
-                loss_sam = criterion_sam(output, label)
-                loss_sid = criterion_sid(output, label)
-                rgbs = np.array(rgbs).transpose(0, 3, 1, 2)
-                rgbs = torch.from_numpy(rgbs).cuda()
-                reals = np.array(reals).transpose(0, 3, 1, 2)
-                reals = torch.from_numpy(reals).cuda()
-                # loss_fid = criterion_fid(rgbs, reals)
-                loss_ssim = criterion_ssim(rgbs, reals)
-                loss_psrnrgb = criterion_psnrrgb(rgbs, reals)
-            # record loss
-            losses_mrae.update(loss_mrae.data)
-            losses_rmse.update(loss_rmse.data)
-            losses_psnr.update(loss_psnr.data)
-            losses_sam.update(loss_sam.data)
-            losses_sid.update(loss_sid.data)
-            # losses_fid.update(loss_fid.data)
-            losses_ssim.update(loss_ssim.data)
-            losses_psnrrgb.update(loss_psrnrgb.data)
-        criterion_sam.reset()
-        criterion_psnr.reset()
-        criterion_psnrrgb.reset()
-        file = '/zhome/02/b/164706/Master_Courses/2023_Fall/Spectral_Reconstruction/result.txt'
-        f = open(file, 'a')
-        f.write(modelname+':\n')
-        f.write(f'MRAE:{losses_mrae.avg}, RMSE: {losses_rmse.avg}, PSNR:{losses_psnr.avg}, SAM: {losses_sam.avg}, SID: {losses_sid.avg}, SSIM: {losses_ssim.avg}, PSNRRGB: {losses_psnrrgb.avg}')
-        f.write('\n')
-        return losses_mrae.avg, losses_rmse.avg, losses_psnr.avg, losses_sam.avg, losses_sid.avg, losses_fid.avg, losses_ssim.avg, losses_psnrrgb.avg
+        for test_loader, name in zip(test_loaders, ['ARAD', 'BGU', 'CAVE']):
+            for i, batch in enumerate(tqdm(test_loader)):
+                label, cond= self.get_input(batch)
+                rgb_gt = batch['cond'].cuda()
+                with torch.no_grad():
+                    output = self.G(cond)
+                    rgbs = []
+                    reals = []
+                    for j in range(output.shape[0]):
+                        mat = {}
+                        mat['cube'] = np.transpose(label[j,:,:,:].cpu().numpy(), [1,2,0])
+                        mat['rgb'] = np.transpose(rgb_gt[j,:,:,:].cpu().numpy(), [1,2,0])
+                        real = np.transpose(rgb_gt[j,:,:,:].cpu().numpy(), [1,2,0])
+                        real = (real - real.min()) / (real.max()-real.min())
+                        mat['rgb'] = real
+                        rgb = SaveSpectral(output[j,:,:,:], count, root='/work3/s212645/Spectral_Reconstruction/FakeHyperSpectrum/' + modelname + '/FullResol/')
+                        rgbs.append(rgb)
+                        reals.append(real)
+                        count += 1
+                    loss_mrae = criterion_mrae(output, label)
+                    loss_rmse = criterion_rmse(output, label)
+                    loss_psnr = criterion_psnr(output, label)
+                    loss_sam = criterion_sam(output, label)
+                    loss_sid = criterion_sid(output, label)
+                    rgbs = np.array(rgbs).transpose(0, 3, 1, 2)
+                    rgbs = torch.from_numpy(rgbs).cuda()
+                    reals = np.array(reals).transpose(0, 3, 1, 2)
+                    reals = torch.from_numpy(reals).cuda()
+                    # loss_fid = criterion_fid(rgbs, reals)
+                    loss_ssim = criterion_ssim(rgbs, reals)
+                    loss_psrnrgb = criterion_psnrrgb(rgbs, reals)
+                # record loss
+                losses_mrae.update(loss_mrae.data)
+                losses_rmse.update(loss_rmse.data)
+                losses_psnr.update(loss_psnr.data)
+                losses_sam.update(loss_sam.data)
+                losses_sid.update(loss_sid.data)
+                # losses_fid.update(loss_fid.data)
+                losses_ssim.update(loss_ssim.data)
+                losses_psnrrgb.update(loss_psrnrgb.data)
+            criterion_sam.reset()
+            criterion_psnr.reset()
+            criterion_psnrrgb.reset()
+            file = '/zhome/02/b/164706/Master_Courses/thesis/HSI-diffusion/result.txt'
+            f = open(file, 'a')
+            f.write(f'{modelname}-{name}:\n')
+            f.write(f'MRAE:{losses_mrae.avg}, RMSE: {losses_rmse.avg}, PSNR:{losses_psnr.avg}, SAM: {losses_sam.avg}, SID: {losses_sid.avg}, SSIM: {losses_ssim.avg}, PSNRRGB: {losses_psnrrgb.avg}')
+            f.write('\n')
+            f.close()
 
 if __name__ == '__main__':
     # cond= torch.randn([1, 6, 128, 128]).cuda()

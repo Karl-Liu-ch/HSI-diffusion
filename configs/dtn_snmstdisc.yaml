@@ -10,8 +10,9 @@ params:
       out_dim: 31
       img_size: [128, 128]
       window_size: 8
-      n_block: [2,2,2,2]
-      bottleblock: 4
+      n_block: [2, 4]
+      bottleblock: 4 
+      num_msab: 1
 
   disconfig:
     target: models.gan.networks.SNTransformerDiscriminator

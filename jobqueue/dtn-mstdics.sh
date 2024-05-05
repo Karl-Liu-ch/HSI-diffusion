@@ -36,5 +36,5 @@ source ./miniconda3/bin/activate
 conda activate pytorch
 cd /zhome/02/b/164706/Master_Courses/thesis/HSI-diffusion/
 export PYTHONUNBUFFERED=1
-python -u train.py -c configs/dtn_snmstdisc.yaml --gpu_id 0 --batch_size 24 --mode train -r
-# python -u train.py -c configs/dtn_sndisc.yaml --gpu_id 0 --batch_size 8 --mode train
+python -u train.py -c configs/dtn_snmstdisc.yaml --gpu_id 0 --batch_size 24 --mode train --learning_rate 2e-4
+# python -u train.py -c configs/dtn_snmstdisc.yaml --batch_size 12 --mode train --learning_rate 2e-4

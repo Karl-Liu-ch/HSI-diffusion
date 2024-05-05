@@ -146,15 +146,23 @@ def split_full(path, valid_ratio, test_ratio, mode = 'train'):
         validlist.append(matlist[j + train_size])
     for k in range(test_size):
         testlist.append(matlist[k + train_size + valid_size])
-    if mode == 'train':
-        train_sets = get_full_dataset(path, trainlist)
-        return train_sets
-    elif mode == 'val':
-        valid_sets = get_full_dataset(path, validlist)
-        return valid_sets
-    elif mode == 'test':
-        test_sets = get_full_dataset(path, testlist)
-        return test_sets
+    match mode:
+        case 'train':
+            datasets = get_full_dataset(path, trainlist)
+        case 'val':
+            datasets = get_full_dataset(path, validlist)
+        case 'test':
+            datasets = get_full_dataset(path, testlist)
+    return datasets
+    # if mode == 'train':
+    #     train_sets = get_full_dataset(path, trainlist)
+    #     return train_sets
+    # elif mode == 'val':
+    #     valid_sets = get_full_dataset(path, validlist)
+    #     return valid_sets
+    # elif mode == 'test':
+    #     test_sets = get_full_dataset(path, testlist)
+    #     return test_sets
 
 def random_split_full(path, valid_ratio, test_ratio, mode = 'train'):
     filelist = os.listdir(path)

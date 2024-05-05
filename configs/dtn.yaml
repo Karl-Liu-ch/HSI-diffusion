@@ -5,6 +5,7 @@ params:
   cond_key: 'cond'
   valid_ratio: 0.1
   test_ratio: 0.1
+  progressive_train: True
   genconfig:
     target: models.transformer.DTN
     params:

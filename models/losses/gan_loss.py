@@ -228,7 +228,8 @@ class Loss(nn.Module):
             return 1.0
 
         d_weight = torch.norm(rec_grads) / (torch.norm(g_grads) + 1e-4)
-        d_weight = torch.clamp(d_weight, 0.0, 1e4).detach()
+        # d_weight = torch.clamp(d_weight, 0.0, 1e4).detach()
+        d_weight = torch.clamp(d_weight, 1.0, 1e4).detach()
         return 1.0
         return d_weight
     

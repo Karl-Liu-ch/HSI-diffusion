@@ -55,7 +55,7 @@ class Gan():
                  loss_type = 'wasserstein',
                  valid_ratio = 0.1, 
                  test_ratio = 0.1,
-                 n_critic = 5,
+                 n_critic = 2,
                  multigpu = False, 
                  noise = False, 
                  use_feature = True,
@@ -189,14 +189,15 @@ class Gan():
                 else:
                     z = cond
                     
-                # if self.iteration % self.n_critic == 0:
                 x_fake = self.G(z)
-                # train D
-                # for _ in range(self.n_critic):
-                self.optimD.zero_grad()
-                loss_d, log_d = self.loss(self.D, x_fake, label, cond, self.epoch, mode = 'dics', last_layer = self.get_last_layer())
-                loss_d.backward()
-                self.optimD.step()
+
+                if self.iteration % self.n_critic == 0:
+                    # train D
+                    # for _ in range(self.n_critic):
+                    self.optimD.zero_grad()
+                    loss_d, log_d = self.loss(self.D, x_fake, label, cond, self.epoch, mode = 'dics', last_layer = self.get_last_layer())
+                    loss_d.backward()
+                    self.optimD.step()
                 
                 # train G
                 # for _ in range(self.n_critic):
@@ -323,7 +324,7 @@ class Gan():
         self.save_metrics()
         return losses_mrae.avg, losses_rmse.avg, losses_psnr.avg, losses_sam.avg, losses_sid.avg
     
-    def test(self, modelname, datanames = ['BGU/', 'ARAD/']):
+    def test(self, modelname):
         try: 
             os.mkdir('/work3/s212645/Spectral_Reconstruction/FakeHyperSpectrum/')
             os.mkdir('/work3/s212645/Spectral_Reconstruction/RealHyperSpectrum/')
@@ -336,7 +337,7 @@ class Gan():
             # os.mkdir('/work3/s212645/Spectral_Reconstruction/RealHyperSpectrum/' + modelname + '/')
         except:
             pass
-        test_data = TestDataset(data_root=opt.data_root, crop_size=1e8, valid_ratio = 0.1, test_ratio=0.1, datanames = datanames)
+        test_data = TestDataset(data_root=self.data_root, crop_size=1e8, valid_ratio = 0.1, test_ratio=0.1, datanames = self.datanames)
         print("Test set samples: ", len(test_data))
         test_loader = DataLoader(dataset=test_data, batch_size=2, shuffle=False, num_workers=32, pin_memory=True)
         self.G.eval()
@@ -403,6 +404,7 @@ class Gan():
         f.write(modelname+':\n')
         f.write(f'MRAE:{losses_mrae.avg}, RMSE: {losses_rmse.avg}, PSNR:{losses_psnr.avg}, SAM: {losses_sam.avg}, SID: {losses_sid.avg}, FID: {losses_fid.avg}, SSIM: {losses_ssim.avg}, PSNRRGB: {losses_psnrrgb.avg}')
         f.write('\n')
+        f.close()
         return losses_mrae.avg, losses_rmse.avg, losses_psnr.avg, losses_sam.avg, losses_sid.avg, losses_fid.avg, losses_ssim.avg, losses_psnrrgb.avg
 
     def save_metrics(self):
@@ -489,7 +491,7 @@ class Gan():
             pass
         print("pretrained model loaded, iteration: ", self.iteration)
 
-    def test_full_resol(self, modelname):
+    def test_full_resol(self, modelname, test_loaders):
         try:
             os.mkdir('/work3/s212645/Spectral_Reconstruction/FakeHyperSpectrum/' + modelname + '/FullResol/')
         except:
@@ -505,14 +507,7 @@ class Gan():
         losses_sid = AverageMeter()
         losses_fid = AverageMeter()
         losses_ssim = AverageMeter()
-        test_data_arad = TestDataset(data_root=self.data_root, crop_size=1e8, valid_ratio = 0.1, test_ratio=0.1, datanames=['ARAD/'], cave=False)
-        test_data_bgu = TestDataset(data_root=self.data_root, crop_size=1e8, valid_ratio = 0.1, test_ratio=0.1, datanames=['BGU/'], cave=False)
-        test_data_cave = TestDataset(data_root=self.data_root, crop_size=1e8, valid_ratio = 0, test_ratio=1, datanames=['CAVE/'], cave=False)
-        test_loader_arad = DataLoader(dataset=test_data_arad, batch_size=1, shuffle=False, num_workers=32, pin_memory=True)
-        test_loader_bgu = DataLoader(dataset=test_data_bgu, batch_size=1, shuffle=False, num_workers=32, pin_memory=True)
-        test_loader_cave = DataLoader(dataset=test_data_cave, batch_size=1, shuffle=False, num_workers=32, pin_memory=True)
         count = 0
-        test_loaders = [test_loader_arad, test_loader_bgu, test_loader_cave]
         for test_loader, name in zip(test_loaders, ['ARAD', 'BGU', 'CAVE']):
             for i, batch in enumerate(tqdm(test_loader)):
                 save_path = f'/work3/s212645/Spectral_Reconstruction/FakeHyperSpectrum/{modelname}-{name}/'
