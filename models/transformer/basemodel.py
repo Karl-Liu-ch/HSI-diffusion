@@ -208,6 +208,9 @@ class TrainModel():
         else:
             self.batch_size = 1
 
+    def finetuning(self):
+        pass
+    
     def hsi2rgb(self, hsi):
         rgb = self.deltaE_criterion.model_hs2rgb(hsi)
         return rgb

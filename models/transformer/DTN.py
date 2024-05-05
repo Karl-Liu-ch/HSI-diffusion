@@ -449,8 +449,8 @@ class DTN_multi_stage(nn.Module):
         b, c, h_inp, w_inp = x.shape
         pad_h = (self.hb - h_inp % self.hb) % self.hb
         pad_w = (self.wb - w_inp % self.wb) % self.wb
-        # x = F.pad(x, [0, pad_w, 0, pad_h], mode='reflect')
-        x = F.pad(x, [0, pad_w, 0, pad_h], mode='constant', value=0.0)
+        x = F.pad(x, [0, pad_w, 0, pad_h], mode='reflect')
+        # x = F.pad(x, [0, pad_w, 0, pad_h], mode='constant', value=0.0)
         x = self.conv_in(x)
         h = self.body(x)
         h = self.conv_out(torch.concat([h, x], dim=1))

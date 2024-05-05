@@ -15,6 +15,7 @@ import shutil
 # from models.transformer import MST_Plus_Plus, DTN
 from utils import *
 os.environ["CUDA_DEVICE_ORDER"] = 'PCI_BUS_ID'
+from timm.scheduler.cosine_lr import CosineLRScheduler
 
 # if opt.multigpu:
 #     os.environ["CUDA_VISIBLE_DEVICES"] = opt.gpu_id
@@ -60,10 +61,12 @@ class Gan():
                  noise = False, 
                  use_feature = True,
                  progressive_train = True,
+                 num_warmup = 0,
+                 patience = 10,
                    **kargs):
         super().__init__()
-        self.earlystop = EarlyStopper(patience=10, min_delta=1e-2, start_epoch=10, gl_weight=1.4)
-        self.progressive_module = EarlyStopper(patience=10, min_delta=1e-2, start_epoch=10, gl_weight=1.4)
+        self.earlystop = EarlyStopper(patience=patience, min_delta=1e-2, start_epoch=10, gl_weight=1.4)
+        self.progressive_module = EarlyStopper(patience=patience, min_delta=1e-2, start_epoch=10, gl_weight=1.4)
         self.image_key = image_key
         self.cond_key = cond_key
         self.n_critic = n_critic
@@ -98,6 +101,7 @@ class Gan():
         self.patch_size = patch_size
         self.batch_size = batch_size
         self.top_k = 3
+        self.num_warmup = num_warmup
         
         self.lossl1 = criterion_mrae
         self.loss_min = np.ones([self.top_k]) * 1000
@@ -109,6 +113,9 @@ class Gan():
         # self.optimG = optim.AdamW(self.G.parameters(), lr=learning_rate, betas=(0.5, 0.9), eps=1e-8, weight_decay=0.05)
         self.optimG = optim.Adam(self.G.parameters(), lr=learning_rate, betas=(0.5, 0.9), eps=1e-14)
         self.optimD = optim.Adam(self.D.parameters(), lr=learning_rate, betas=(0.5, 0.9), eps=1e-12)
+        self.schedulerG = torch.optim.lr_scheduler.CosineAnnealingWarmRestarts(self.optimG, T_0=self.total_iteration, T_mult=1, eta_min=1e-6, last_epoch=-1)
+        self.schedulerD = torch.optim.lr_scheduler.CosineAnnealingWarmRestarts(self.optimD, T_0=self.total_iteration, T_mult=1, eta_min=1e-6, last_epoch=-1)
+        self.learning_rate = learning_rate
         self.root = ckpath
         if not opt.resume:
             shutil.rmtree(self.root + 'runs/', ignore_errors=True)
@@ -163,10 +170,28 @@ class Gan():
 
     def train(self):
         self.load_dataset()
-        iter_per_epoch = len(self.train_data)
-        self.total_iteration = self.end_epoch * (iter_per_epoch // self.batch_size + 1)
-        self.schedulerG = torch.optim.lr_scheduler.CosineAnnealingWarmRestarts(self.optimG, T_0=self.total_iteration, T_mult=1, eta_min=1e-6, last_epoch=-1)
-        self.schedulerD = torch.optim.lr_scheduler.CosineAnnealingWarmRestarts(self.optimD, T_0=self.total_iteration, T_mult=1, eta_min=1e-6, last_epoch=-1)
+        train_loader = DataLoader(dataset=self.train_data, batch_size=self.batch_size, shuffle=True, num_workers=8,
+                                pin_memory=True, drop_last=False)
+        iter_per_epoch = len(train_loader)
+        self.total_iteration = self.end_epoch * (iter_per_epoch)
+        self.schedulerG = torch.optim.lr_scheduler.CosineAnnealingWarmRestarts(self.optimG, T_0=self.total_iteration, T_mult=1, eta_min=1e-6, last_epoch=self.iteration)
+        self.schedulerD = torch.optim.lr_scheduler.CosineAnnealingWarmRestarts(self.optimD, T_0=self.total_iteration, T_mult=1, eta_min=1e-6, last_epoch=self.iteration)
+        # self.schedulerG = CosineLRScheduler(self.optimG,t_initial=(self.end_epoch - self.num_warmup) * iter_per_epoch,
+        #                                     cycle_mul = 1,cycle_decay = 1,lr_min=1e-6,
+        #                                     warmup_lr_init=self.learning_rate,warmup_t=self.num_warmup * iter_per_epoch,
+        #                                     cycle_limit=1,t_in_epochs=False)
+        # self.schedulerD = CosineLRScheduler(self.optimD,t_initial=(self.end_epoch - self.num_warmup) * iter_per_epoch,
+        #                                     cycle_mul = 1,cycle_decay = 1,lr_min=1e-6,
+        #                                     warmup_lr_init=self.learning_rate,warmup_t=self.num_warmup * iter_per_epoch,
+        #                                     cycle_limit=1,t_in_epochs=False)
+        # self.schedulerG = CosineLRScheduler(self.optimG,t_initial=10*iter_per_epoch,cycle_mul = 2.5,cycle_decay = 0.5,
+        #                                     lr_min=1e-6,warmup_lr_init=self.learning_rate,
+        #                                     warmup_t=self.num_warmup*iter_per_epoch,warmup_prefix=False,
+        #                                     cycle_limit=3,t_in_epochs=False,)
+        # self.schedulerD = CosineLRScheduler(self.optimD,t_initial=10*iter_per_epoch,cycle_mul = 2.5,cycle_decay = 0.5,
+        #                                     lr_min=1e-6,warmup_lr_init=self.learning_rate,
+        #                                     warmup_t=self.num_warmup*iter_per_epoch,warmup_prefix=False,
+        #                                     cycle_limit=3,t_in_epochs=False,)
         while self.epoch<self.end_epoch:
             self.G.train()
             self.D.train()
@@ -208,8 +233,12 @@ class Gan():
                 loss_G.backward()
                 self.optimG.step()
                 
-                self.schedulerD.step()
-                self.schedulerG.step()
+                if isinstance(self.schedulerD, torch.optim.lr_scheduler.CosineAnnealingWarmRestarts):
+                    self.schedulerD.step()
+                    self.schedulerG.step()
+                elif isinstance(self.schedulerD, CosineLRScheduler):
+                    self.schedulerD.step_update(self.iteration)
+                    self.schedulerG.step_update(self.iteration)
                 
                 loss_mrae = criterion_mrae(x_fake, label)
                 losses.update(loss_mrae.data)
@@ -262,17 +291,126 @@ class Gan():
         self.optimD = optim.Adam(self.D.parameters(), lr=4e-5, betas=(0.5, 0.9), eps=1e-12)
         self.schedulerG = torch.optim.lr_scheduler.CosineAnnealingLR(self.optimG, self.total_iteration, eta_min=1e-6)
         self.schedulerD = torch.optim.lr_scheduler.CosineAnnealingLR(self.optimD, self.total_iteration, eta_min=1e-6)
-        self.patch_size = self.patch_size * 2
+        self.patch_size = self.patch_size * 4
         if self.patch_size > 482:
             arg = False
         else:
             arg = True
         self.train_data = TrainDataset(data_root=self.data_root, crop_size=self.patch_size, valid_ratio = 0.1, test_ratio=0.1, arg=arg, datanames = self.datanames, stride=self.patch_size)
         print(f"Iteration per epoch: {len(self.train_data)}")
-        if self.batch_size > 4:
-            self.batch_size = self.batch_size // 4
-        else:
-            self.batch_size = 1
+        self.batch_size = 1
+
+    def finetuning(self):
+        self.patch_size = 1e8
+        self.batch_size = 1
+        self.load_dataset()
+        self.load_checkpoint(best=True)
+        self.learning_rate = 4e-5
+        self.ft_end_epoch = 10
+        self.ft_start_iteration = self.iteration
+        train_loader = DataLoader(dataset=self.train_data, batch_size=self.batch_size, shuffle=True, num_workers=8,
+                                pin_memory=True, drop_last=False)
+        iter_per_epoch = len(train_loader)
+        self.total_iteration = self.end_epoch * (iter_per_epoch)
+        self.schedulerG = CosineLRScheduler(self.optimG,t_initial=self.ft_end_epoch * iter_per_epoch,
+                                            cycle_mul = 1,cycle_decay = 1,lr_min=1e-6,
+                                            warmup_lr_init=self.learning_rate,warmup_t=0,
+                                            cycle_limit=1,t_in_epochs=False)
+        self.schedulerD = CosineLRScheduler(self.optimD,t_initial=self.ft_end_epoch * iter_per_epoch,
+                                            cycle_mul = 1,cycle_decay = 1,lr_min=1e-6,
+                                            warmup_lr_init=self.learning_rate,warmup_t=0,
+                                            cycle_limit=1,t_in_epochs=False)
+        while self.epoch<self.ft_end_epoch + self.end_epoch:
+            self.G.train()
+            self.D.train()
+            losses = AverageMeter()
+            g_losses = AverageMeter()
+            d_losses = AverageMeter()
+            train_loader = DataLoader(dataset=self.train_data, batch_size=self.batch_size, shuffle=True, num_workers=8,
+                                    pin_memory=True, drop_last=False)
+            if len(self.val_data) > 95:
+                val_loader = DataLoader(dataset=self.val_data, batch_size=self.batch_size, shuffle=False, num_workers=8, pin_memory=True)
+            else:
+                val_loader = DataLoader(dataset=self.val_data, batch_size=1, shuffle=False, num_workers=8, pin_memory=True)
+            pbar = tqdm(train_loader)
+            for i, batch in enumerate(pbar):
+                label, cond = self.get_input(batch)
+                if self.noise:
+                    z = torch.randn_like(cond).cuda()
+                    z = torch.concat([z, cond], dim=1)
+                    z = Variable(z)
+                else:
+                    z = cond
+                    
+                x_fake = self.G(z)
+
+                if self.iteration % self.n_critic == 0:
+                    # train D
+                    # for _ in range(self.n_critic):
+                    self.optimD.zero_grad()
+                    loss_d, log_d = self.loss(self.D, x_fake, label, cond, self.epoch, mode = 'dics', last_layer = self.get_last_layer())
+                    loss_d.backward()
+                    self.optimD.step()
+                
+                # train G
+                # for _ in range(self.n_critic):
+                # x_fake = self.G(z)
+                self.optimG.zero_grad()
+                lrG = self.optimG.param_groups[0]['lr']
+                loss_G, log_g = self.loss(self.D, x_fake, label, cond, self.epoch, mode = 'gen', last_layer = self.get_last_layer())
+                loss_G.backward()
+                self.optimG.step()
+                
+                if isinstance(self.schedulerD, CosineLRScheduler):
+                    self.schedulerD.step_update(self.iteration - self.ft_start_iteration)
+                    self.schedulerG.step_update(self.iteration - self.ft_start_iteration)
+                
+                loss_mrae = criterion_mrae(x_fake, label)
+                losses.update(loss_mrae.data)
+                g_losses.update(loss_G.data)
+                d_losses.update(loss_d.data)
+                self.writer.add_scalar("MRAE/train", loss_mrae, self.iteration)
+                self.writer.add_scalar("lr/train", lrG, self.iteration)
+                self.writer.add_scalar("loss_G/train", loss_G, self.iteration)
+                self.writer.add_scalar("loss_D/train", loss_d, self.iteration)
+                self.writer.add_scalar("gen loss/train", log_g['gen loss'], self.iteration)
+                self.writer.add_scalar("delta e loss/train", log_g['delta e'], self.iteration)
+                self.writer.add_scalar("disc loss real/train", log_d['real loss'], self.iteration)
+                self.writer.add_scalar("disc loss fake/train", log_d['fake loss'], self.iteration)
+                self.iteration = self.iteration+1
+                logs = {'epoch':self.epoch, 'iter':self.iteration, 'lr':'%.9f'%lrG, 'train_losses':'%.9f'%(losses.avg), 'G_loss':'%.9f'%(loss_G), 'D_loss':'%.9f'%(loss_d)}
+                pbar.set_postfix(logs)
+            # validation
+            mrae_loss, rmse_loss, psnr_loss, sam_loss, sid_loss = self.validate(val_loader)
+            print(f'MRAE:{mrae_loss}, RMSE: {rmse_loss}, PSNR:{psnr_loss}, SAM: {sam_loss}, SID: {sid_loss}')
+            self.writer.add_scalar("MRAE/val", mrae_loss, self.epoch)
+            self.writer.add_scalar("RMSE/val", rmse_loss, self.epoch)
+            self.writer.add_scalar("PSNR/val", psnr_loss, self.epoch)
+            self.writer.add_scalar("SAM/val", sam_loss, self.epoch)
+            # Save model
+            print(f'Saving to {self.root}')
+            self.save_checkpoint()
+            if mrae_loss < self.best_mrae:
+                self.best_mrae = mrae_loss
+                self.save_checkpoint(True)
+            save_top, top_n = self.save_top_k(mrae_loss.detach().cpu().numpy())
+            if save_top:
+                self.save_checkpoint(top_k=top_n)
+            print(" Iter[%06d], Epoch[%06d], learning rate : %.9f, Train MRAE: %.9f, Test MRAE: %.9f, "
+                "Test RMSE: %.9f, Test PSNR: %.9f, SAM: %.9f, SID: %.9f " % (self.iteration, 
+                                                                self.epoch, lrG, 
+                                                                losses.avg, mrae_loss, rmse_loss, psnr_loss, sam_loss, sid_loss))
+            if self.progressive_module.early_stop(mrae_loss, losses.avg) and self.progressive_train and  self.patch_size < 512:
+                self.progressive_training()
+                self.progressive_module.reset()
+                self.earlystop.reset()
+            if self.earlystop.early_stop(mrae_loss, losses.avg):
+                print('early stopped because no improvement in validation')
+                break
+            if mrae_loss > 100.0: 
+                break
+            self.epoch += 1
+
 
     def hsi2rgb(self, hsi):
         rgb = self.loss.deltaELoss.model_hs2rgb(hsi)
@@ -437,6 +575,8 @@ class Gan():
                 'D': self.D.module.state_dict(),
                 'optimG': self.optimG.state_dict(),
                 'optimD': self.optimD.state_dict(),
+                'schedulerG': self.schedulerG.state_dict(),
+                'schedulerD': self.schedulerD.state_dict(),
                 'early_stop':self.earlystop.save(),
                 'progressive_module': self.progressive_module.save(),
                 'patch_size': self.patch_size,
@@ -451,6 +591,8 @@ class Gan():
                 'D': self.D.state_dict(),
                 'optimG': self.optimG.state_dict(),
                 'optimD': self.optimD.state_dict(),
+                'schedulerG': self.schedulerG.state_dict(),
+                'schedulerD': self.schedulerD.state_dict(),
                 'early_stop':self.earlystop.save(),
                 'progressive_module': self.progressive_module.save(),
                 'patch_size': self.patch_size,
@@ -485,6 +627,8 @@ class Gan():
         self.patch_size = checkpoint['patch_size']
         self.earlystop.load(checkpoint['early_stop'])
         self.progressive_module.load(checkpoint['progressive_module'])
+        self.schedulerG.load_state_dict(checkpoint['schedulerG'])
+        self.schedulerD.load_state_dict(checkpoint['schedulerD'])
         try:
             self.load_metrics()
         except:

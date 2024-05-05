@@ -51,6 +51,7 @@ if __name__ == '__main__':
                 # except Exception as ex:
                 #     print(ex)
                 model.train()
+                model.finetuning()
                 opt.mode = 'test'
             case 'test':
                 model.load_checkpoint(best=True)
