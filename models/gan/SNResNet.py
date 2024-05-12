@@ -170,10 +170,10 @@ class ResNet(nn.Module):
         self.avgpool = nn.Sequential(nn.AdaptiveAvgPool2d((1, 1)), nn.Flatten())
         self.fc = SNLinear(512 * block.expansion, num_classes)
         self.out = nn.Sequential(
-            # SNConv2d(2048, 1, 4, 1, 0),
+            SNConv2d(512 * block.expansion, 1, 4, 1, 0),
             nn.AdaptiveAvgPool2d((1,1)), 
             nn.Flatten(), 
-            SNLinear(512 * block.expansion, 1)
+            # SNLinear(512 * block.expansion, 1)
         )
 
         for m in self.modules():

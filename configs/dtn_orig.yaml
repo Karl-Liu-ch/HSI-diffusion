@@ -1,25 +1,24 @@
-target: models.transformer.basemodel.TrainModel
+target: models.transformer.basemodel.TrainModel_iter
 params:
   ckpath: /work3/s212645/Spectral_Reconstruction/checkpoint/DTN/
   image_key: 'label'
-  cond_key: 'cond'
-  valid_ratio: 0.1
-  test_ratio: 0.1
-  datanames: ['ARAD/']
-  stride: 128
-  random_split_data: True
-  progressive_train: True
+  cond_key: 'ycrcb'
+  valid_ratio: 0.053
+  test_ratio: 0.0
+  datanames: ['ARAD-origin/']
+  random_split_data: False
+  progressive_train: False
   genconfig:
     target: models.transformer.DT_attn.DTN
     params:
-      in_dim: 3
+      in_dim: 6
       out_dim: 31
       img_size: [128, 128]
       window_size: 8
       n_block: [2, 4]
       bottleblock: 4 
       num_msab: 1
-      use_conv: True
+      use_conv: False
       use_cswin: True
       use_gdfn: True
       split_size: 2

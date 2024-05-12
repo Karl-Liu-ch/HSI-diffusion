@@ -22,6 +22,7 @@ from models.transformer.SN_MST_Plus_Plus import MSAB as SN_MSAB
 from models.gan.SpectralNormalization import SNLinear, SNConv2d, SNConvTranspose2d
 from models.transformer.swin_transformer import SwinTransformerBlock
 from models.transformer.swin_transformer_v2 import SwinTransformerBlock as SwinTransformerBlock_v2
+from models.transformer.CSwin import CSWinBlock
 from models.transformer.sn_swin_transformer_v2 import SwinTransformerBlock as SN_SwinTransformerBlock
 from models.transformer.agent_swin import SwinTransformerBlock as AgentSwin
 from models.transformer.Base import BaseModel
@@ -51,6 +52,34 @@ def change_resolution(module, new_resolution):
     if isinstance(module, SwinTransformerBlock_v2) or isinstance(module, SwinTransformerBlock):
         module.change_resolution(new_resolution)
 
+##########################################################################
+## Gated-Dconv Feed-Forward Network (GDFN)
+class GDFN(nn.Module):
+    def __init__(self, dim, ffn_expansion_factor = 4, bias = False, act_fn = nn.GELU()):
+        super(GDFN, self).__init__()
+
+        hidden_features = int(dim*ffn_expansion_factor)
+
+        self.project_in = nn.Conv2d(dim, hidden_features*2, kernel_size=1, bias=bias)
+
+        self.norm = nn.LayerNorm(hidden_features)
+
+        self.dwconv = nn.Conv2d(hidden_features, hidden_features, kernel_size=3, stride=1, padding=1, groups=hidden_features, bias=bias)
+
+        self.project_out = nn.Conv2d(hidden_features, dim, kernel_size=1, bias=bias)
+
+        self.act_fn = act_fn
+
+    def forward(self, x, h, w):
+        x = rearrange(x, 'b (h w) c -> b c h w', h = h, w = w)
+        x1, x2 = self.project_in(x).chunk(2, dim=1)
+        B, C, H, W = x1.shape
+        x1 = self.dwconv(self.norm(x1.view(B, C, H * W).permute(0,2,1)).permute(0,2,1).view(B,C,H,W))
+        x = self.act_fn(x1) * x2
+        x = self.project_out(x)
+        x = rearrange(x, 'b c h w -> b (h w) c')
+        return x
+
 class SpatialGate(nn.Module):
     """ Spatial-Gate.
     Args:
@@ -68,7 +97,6 @@ class SpatialGate(nn.Module):
         x2 = self.conv(self.norm(x2).transpose(1, 2).contiguous().view(B, C//2, H, W)).flatten(2).transpose(-1, -2).contiguous()
         
         return x1 * x2
-
 
 class SGFN(nn.Module):
     """ Spatial-Gate Feed-Forward Network.
@@ -104,6 +132,36 @@ class SGFN(nn.Module):
         x = self.fc2(x)
         x = self.drop(x)
         return x
+
+class CSWinB(nn.Module):
+    def __init__(self, dim, input_resolution, num_heads, split_size):
+        super().__init__()
+        self.input_resolution = input_resolution
+        self.embed = nn.Linear(dim, dim * 2, bias=False)
+        self.attn = CSWinBlock(dim * 2, input_resolution[0], num_heads=num_heads * 2, split_size=split_size)
+        self.out = nn.Linear(dim * 2, dim, bias=False)
+        self._init_respostnorm()
+
+    def _init_respostnorm(self):
+        nn.init.constant_(self.attn.norm1.bias, 0)
+        nn.init.constant_(self.attn.norm1.weight, 0)
+        nn.init.constant_(self.attn.norm2.bias, 0)
+        nn.init.constant_(self.attn.norm2.weight, 0)
+        
+    def forward(self, x):
+        B, C, H, W = x.shape
+        if  H != self.input_resolution[0] or W != self.input_resolution[1]:
+            self.change_resolution(tuple([H, W]))
+        x = rearrange(x, 'b c h w -> b (h w) c', h=H, w=W)
+        x = self.out(self.attn(self.embed(x)))
+        x = rearrange(x, 'b (h w) c -> b c h w', h=H, w=W)
+        return x
+    
+    def change_resolution(self, new_resolution):
+        self.input_resolution = new_resolution
+        self.attn.patches_resolution = new_resolution[0]
+        for attn in self.attn.attns:
+            attn.change_resol(new_resolution[0])
 
 class SWTB(nn.Module):
     def __init__(self, dim, input_resolution, num_heads=1, window_size=8, shift_size=0):
@@ -144,13 +202,23 @@ class Adaptive_SWTB(nn.Module):
                  input_resolution=(128,128), 
                  num_heads=1, 
                  window_size=8, 
-                 shift_size=0):
+                 shift_size=0,
+                 use_cswin = False, 
+                 use_gdfn = False, 
+                 split_size = 1):
         super().__init__()
-        self.model = SWTB(dim=dim, 
-                          input_resolution=input_resolution, 
-                          num_heads=num_heads, 
-                          window_size=window_size,
-                          shift_size=shift_size)
+        if use_cswin:
+            self.model = CSWinB(dim=dim, 
+                            input_resolution=input_resolution, 
+                            num_heads=num_heads, 
+                            split_size=split_size)
+        else:
+            self.model = SWTB(dim=dim, 
+                            input_resolution=input_resolution, 
+                            num_heads=num_heads, 
+                            window_size=window_size,
+                            shift_size=shift_size)
+        
         self.dwconv = nn.Sequential(
             nn.Conv2d(dim, dim, kernel_size=3, stride=1, padding=1,groups=dim),
             nn.BatchNorm2d(dim),
@@ -172,7 +240,10 @@ class Adaptive_SWTB(nn.Module):
             nn.Conv2d(dim // 16, 1, kernel_size=1)
         )
         self.norm2 = nn.LayerNorm(dim)
-        self.ffn = SGFN(in_features=dim, hidden_features=dim*2)
+        if use_gdfn:
+            self.ffn = GDFN(dim=dim, ffn_expansion_factor=4)
+        else:
+            self.ffn = SGFN(in_features=dim, hidden_features=dim*2)
     
     def forward(self, x_in):
         B, C, H, W = x_in.shape
@@ -200,9 +271,12 @@ class Adaptive_MSAB(nn.Module):
     def __init__(self, dim=31, 
                  num_blocks=2, 
                  dim_head=31, 
-                 heads=1):
+                 heads=1, 
+                 use_conv = False, 
+                 use_gdfn = False):
         super().__init__()
-        self.model = MSAB(dim=dim, num_blocks=num_blocks, dim_head=dim_head, heads=heads, use_conv=False)
+        self.use_conv = use_conv
+        self.model = MSAB(dim=dim, num_blocks=num_blocks, dim_head=dim_head, heads=heads, use_conv=use_conv)
         
         self.dwconv = nn.Sequential(
             nn.Conv2d(dim, dim, kernel_size=3, stride=1, padding=1, groups=dim),
@@ -225,13 +299,20 @@ class Adaptive_MSAB(nn.Module):
             nn.Conv2d(dim // 16, 1, kernel_size=1)
         )
         self.norm2 = nn.LayerNorm(dim)
-        self.ffn = SGFN(in_features=dim, hidden_features=dim*2)
+        if use_gdfn:
+            self.ffn = GDFN(dim=dim, ffn_expansion_factor=4)
+        else:
+            self.ffn = SGFN(in_features=dim, hidden_features=dim*2)
         self.apply(self._init_weights)
 
     def _init_weights(self, m):
         if isinstance(m, nn.Linear):
             trunc_normal_(m.weight, std=.02)
             if isinstance(m, nn.Linear) and m.bias is not None:
+                nn.init.constant_(m.bias, 0)
+        if isinstance(m, nn.Conv2d) and self.use_conv:
+            trunc_normal_(m.weight, std=.02)
+            if isinstance(m, nn.Conv2d) and m.bias is not None:
                 nn.init.constant_(m.bias, 0)
         elif isinstance(m, nn.LayerNorm):
             nn.init.constant_(m.bias, 0)
@@ -259,7 +340,7 @@ class Adaptive_MSAB(nn.Module):
         return out
 
 class DTNBlock(nn.Module):
-    def __init__(self, dim, dim_head, input_resolution, num_heads, window_size, num_block, num_msab = 2):
+    def __init__(self, dim, dim_head, input_resolution, num_heads, window_size, num_block, num_msab = 2, use_conv = False, use_cswin = False, use_gdfn = False, split_size = 4):
         super().__init__()
         self.dim = dim
         self.dim_head = dim_head
@@ -268,8 +349,8 @@ class DTNBlock(nn.Module):
         self.window_size = window_size
         layer = []
         for i in range(num_block):
-            layer += [Adaptive_MSAB(dim, num_blocks=num_msab, dim_head=dim_head, heads=dim // dim_head)]
-            layer += [Adaptive_SWTB(dim, self.input_resolution, num_heads=dim // dim_head, window_size=window_size)]
+            layer += [Adaptive_MSAB(dim, num_blocks=num_msab, dim_head=dim_head, heads=dim // dim_head, use_conv=use_conv, use_gdfn= use_gdfn)]
+            layer += [Adaptive_SWTB(dim, self.input_resolution, num_heads=dim // dim_head, window_size=window_size, use_cswin = use_cswin, use_gdfn= use_gdfn, split_size=split_size)]
         self.model = nn.Sequential(*layer)
         
     def forward(self, x):
@@ -283,8 +364,13 @@ class DownSample(nn.Module):
         #     nn.BatchNorm2d(outchannel), 
         #     nn.GELU()
         # )
+        # self.model = nn.Sequential(
+        #     nn.Conv2d(inchannel, outchannel, kernel_size=4, stride=2, padding=1, bias=False)
+        # )
         self.model = nn.Sequential(
-            nn.Conv2d(inchannel, outchannel, kernel_size=4, stride=2, padding=1, bias=False)
+            nn.Conv2d(inchannel, inchannel, kernel_size=3, stride=1, padding=1, bias=False), 
+            nn.PixelUnshuffle(2),
+            nn.Conv2d(inchannel * 4, outchannel, kernel_size=3, stride=1, padding=1, bias=False), 
         )
         
     def forward(self, x):
@@ -298,15 +384,13 @@ class UpSample(nn.Module):
         #     nn.BatchNorm2d(outchannel), 
         #     nn.GELU()
         # )
-        self.model = nn.Sequential(
-            nn.ConvTranspose2d(inchannel, outchannel, stride=2, kernel_size=2, padding=0, output_padding=0),
-        )
         # self.model = nn.Sequential(
-        #     nn.Conv2d(inchannel, inchannel * 4, kernel_size=1, stride=1, padding=0, bias=False), 
-        #     nn.GELU(), 
-        #     nn.PixelShuffle(2),
-        #     nn.Conv2d(inchannel, outchannel, kernel_size=3, stride=1, padding=1, bias=False), 
+        #     nn.ConvTranspose2d(inchannel, outchannel, stride=2, kernel_size=2, padding=0, output_padding=0),
         # )
+        self.model = nn.Sequential(
+            nn.Conv2d(inchannel, outchannel * 4, kernel_size=3, stride=1, padding=1, bias=False), 
+            nn.PixelShuffle(2),
+        )
         
     def forward(self, x):
         return self.model(x)
@@ -322,7 +406,11 @@ class DTN(nn.Module):
                  window_size = 8, 
                  n_block=[2,2,2,2], 
                  bottleblock = 4, 
-                 num_msab = 2):
+                 num_msab = 2, 
+                 use_conv = False, 
+                 use_cswin = False, 
+                 use_gdfn = False, 
+                 split_size = 1):
         super().__init__()
         self.min_window = window_size * 2 ** len(n_block)
         img_size[0] = (self.min_window - img_size[0] % self.min_window) % self.min_window + img_size[0]
@@ -341,12 +429,17 @@ class DTN(nn.Module):
                          num_heads = dim_stage // dim, 
                          window_size = window_size, 
                          num_block = num_block,
-                         num_msab=num_msab),
+                         num_msab=num_msab, 
+                         use_conv=use_conv, 
+                         use_cswin = use_cswin,
+                         use_gdfn = use_gdfn, 
+                         split_size = split_size),
                 DownSample(dim_stage, dim_stage * 2),
             ]))
             img_size[0] = img_size[0] // 2
             img_size[1] = img_size[1] // 2
             dim_stage *= 2
+            split_size = min(split_size * 2, img_size[0])
         
         self.bottleneck = DTNBlock(dim = dim_stage, 
                          dim_head = dim, 
@@ -354,7 +447,11 @@ class DTN(nn.Module):
                          num_heads = dim_stage // dim, 
                          window_size = window_size, 
                          num_block = bottleblock,
-                         num_msab=num_msab)
+                         num_msab=num_msab, 
+                         use_conv=use_conv, 
+                         use_cswin = use_cswin,
+                         use_gdfn = use_gdfn, 
+                         split_size = split_size)
         
         # Decoder
         self.decoder_layers = nn.ModuleList([])
@@ -362,6 +459,7 @@ class DTN(nn.Module):
         for num_block in n_block:
             img_size[0] = img_size[0] * 2
             img_size[1] = img_size[1] * 2
+            split_size = min(split_size // 2, img_size[0])
             self.decoder_layers.append(nn.ModuleList([
                 UpSample(dim_stage, dim_stage // 2), 
                 nn.Conv2d(dim_stage, dim_stage // 2, 1, 1, bias=False),
@@ -371,7 +469,11 @@ class DTN(nn.Module):
                          num_heads = (dim_stage // 2) // dim, 
                          window_size = window_size, 
                          num_block = num_block,
-                         num_msab=num_msab),
+                         num_msab=num_msab, 
+                         use_conv=use_conv, 
+                         use_cswin = use_cswin,
+                         use_gdfn = use_gdfn, 
+                         split_size = split_size),
             ]))
             dim_stage //= 2
         
@@ -383,9 +485,6 @@ class DTN(nn.Module):
             trunc_normal_(m.weight, std=.02)
             if isinstance(m, nn.Linear) and m.bias is not None:
                 nn.init.constant_(m.bias, 0)
-        # elif isinstance(m, nn.LayerNorm):
-        #     nn.init.constant_(m.bias, 0)
-        #     nn.init.constant_(m.weight, 1.0)
 
     def forward(self, x):
         b, c, h_inp, w_inp = x.shape
@@ -472,14 +571,15 @@ if __name__ == '__main__':
                     out_dim=31,
                     img_size=[128, 128], 
                     window_size=8, 
-                    n_block=[2,2,2,2], 
-                    bottleblock = 4).to(device)
+                    n_block=[2,4], 
+                    bottleblock = 4, 
+                    num_msab=1).to(device)
     # model.apply(init_weights_uniform)
     # model = DTN_multi_stage(in_channels=3, out_channels=31, n_feat=31, img_size=[128, 128], window=32).to(device)
     input = torch.rand([1, 3, 128, 128]).to(device)
     output = model(input.float())
     print(output.shape)
-    summary(model, (3, 128, 128))
+    summary(model, (3, 256, 256))
     # spec = TrainDTN(opt, model, model_name='DTN')
     # if opt.loadmodel:
     #     try:

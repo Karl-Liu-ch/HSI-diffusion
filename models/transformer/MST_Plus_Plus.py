@@ -152,11 +152,10 @@ class Conv_MS_MSA(nn.Module):
         super().__init__()
         self.num_heads = heads
         self.dim_head = dim_head
-        self.to_q = nn.Conv2d(dim, dim_head * heads, 3, 1, 1, bias=False, groups=dim)
-        self.to_k = nn.Conv2d(dim, dim_head * heads, 3, 1, 1, bias=False, groups=dim)
-        self.to_v = nn.Conv2d(dim, dim_head * heads, 3, 1, 1, bias=False, groups=dim)
+        self.qkv = nn.Conv2d(dim, dim*3, kernel_size=1, bias=False)
+        self.qkv_dwconv = nn.Conv2d(dim*3, dim*3, kernel_size=3, stride=1, padding=1, groups=dim*3, bias=False)
         self.rescale = nn.Parameter(torch.ones(heads, 1, 1))
-        self.proj = nn.Conv2d(dim_head * heads, dim, 3, 1, 1,bias=True)
+        self.proj = nn.Conv2d(dim_head * heads, dim, 3, 1, 1,bias=False)
         self.pos_emb = nn.Sequential(
             nn.Conv2d(dim, dim, 3, 1, 1, bias=False, groups=dim),
             nn.GELU(),
@@ -171,9 +170,12 @@ class Conv_MS_MSA(nn.Module):
         """
         b, h, w, c = x_in.shape
         x = x_in.permute(0,3,1,2)
-        q_inp = self.to_q(x).permute(0,2,3,1).reshape(b,h*w,c)
-        k_inp = self.to_k(x).permute(0,2,3,1).reshape(b,h*w,c)
-        v_inp = self.to_v(x).permute(0,2,3,1).reshape(b,h*w,c)
+        qkv = self.qkv_dwconv(self.qkv(x))
+        q,k,v = qkv.chunk(3, dim=1)
+
+        q_inp = rearrange(q, 'b c h w -> b (h w) c')
+        k_inp = rearrange(k, 'b c h w -> b (h w) c')
+        v_inp = rearrange(v, 'b c h w -> b (h w) c')
         q, k, v = map(lambda t: rearrange(t, 'b n (h d) -> b h n d', h=self.num_heads),
                                 (q_inp, k_inp, v_inp))
         v = v

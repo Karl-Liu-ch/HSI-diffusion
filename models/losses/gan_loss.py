@@ -195,7 +195,7 @@ class GANLoss(nn.Module):
         return loss
 
 class Loss(nn.Module):
-    def __init__(self, *, l1_weight, sam_weight, features_weight, disc_weight, perceptual_weight =0.0, deltaE_weight = 1.0, threshold = 0, losstype = 'wasserstein', **kwargs) -> None:
+    def __init__(self, *, l1_weight, sam_weight, features_weight, disc_weight, perceptual_weight =0.0, deltaE_weight = 1.0, threshold = 0, losstype = 'wasserstein', use_features = False, **kwargs) -> None:
         super().__init__()
         # self.l1_loss = nn.L1Loss()
         self.l1_loss = Loss_MRAE()
@@ -209,6 +209,8 @@ class Loss(nn.Module):
         self.threshold = threshold
         self.perceptual_weight = perceptual_weight
         self.criterionGAN = GANLoss(losstype)
+        self.use_features = use_features
+        self.finetune = False
         if perceptual_weight > 0:
             self.perceptual_model = load_hsi_perceptual_encoder()
 
@@ -241,10 +243,19 @@ class Loss(nn.Module):
         return rec_loss
 
     def gan_loss(self, discriminator, reconstructions, labels, cond):
-        disc_fake = discriminator(torch.concat([reconstructions, cond], dim=1))
-        disc_real = discriminator(torch.concat([labels, cond], dim=1))
-        disc_real_features = None
-        disc_fake_features = None
+        recon_cond = torch.concat([reconstructions, cond], dim=1)
+        label_cond = torch.concat([labels, cond], dim=1)
+        if self.finetune:
+            recon_cond, _, _ = window_partition(recon_cond, 128)
+            label_cond, _, _ = window_partition(label_cond, 128)
+        if self.use_features:
+            disc_fake, disc_fake_features = discriminator(recon_cond)
+            disc_real, disc_real_features = discriminator(label_cond)
+        else:
+            disc_fake = discriminator(recon_cond)
+            disc_real = discriminator(label_cond)
+            disc_real_features = None
+            disc_fake_features = None
         return disc_real, disc_fake, disc_real_features, disc_fake_features
 
     def adopt_factor(self, global_step):
@@ -286,7 +297,7 @@ class Loss(nn.Module):
         if (real_features is not None) and (fake_features is not None):
             for k in range(len(fake_features)):
                 feature_loss += F.mse_loss(real_features[k], fake_features[k])
-        total_loss = disc_fake + disc_real - feature_loss * self.features_weight
+        total_loss = disc_fake + disc_real - feature_loss * self.disc_weight
         log = {'real loss':disc_real, 'fake loss':disc_fake}
         return total_loss * disc_factor, log
 

@@ -6,6 +6,7 @@ params:
   valid_ratio: 0.1
   test_ratio: 0.1
   progressive_train: False
+  datanames: ['ARAD/']
   genconfig:
     target: models.transformer.MST_Plus_Plus
     params:

@@ -1,127 +1,12 @@
-import sys
-sys.path.append('./')
-import torch.nn as nn
+# ---------------------------------------------------------------------------------------------
+# Modified from Swin Transformer, please refer to https://github.com/microsoft/Swin-Transformer
+# ---------------------------------------------------------------------------------------------
+
 import torch
-from torch.nn import functional as F
-from einops import rearrange, repeat
-from einops.layers.torch import Rearrange
-import torch.optim as optim
-import torch.backends.cudnn as cudnn
-from utils import AverageMeter, record_loss, Loss_MRAE, Loss_RMSE, Loss_PSNR
-from options import opt
-import os
-from torch.utils.data import DataLoader
-from torch.autograd import Variable
-from torch import autograd
-import functools
-from timm.models.layers import DropPath, to_2tuple, trunc_normal_
+import torch.nn as nn
 import torch.utils.checkpoint as checkpoint
+from timm.models.layers import DropPath, to_2tuple, trunc_normal_
 
-class SNLinear(nn.Module):
-    def __init__(self, in_features, out_features, bias = True):
-        super().__init__()
-        self.linear = nn.Linear(in_features=in_features,
-                                out_features=out_features, 
-                                bias=True)
-        # nn.init.xavier_uniform_(self.linear.weight.data, 1.)
-        # if bias:
-        #     nn.init.constant_(self.linear.bias.data, 0.0)
-        self.linear = nn.utils.spectral_norm(self.linear)
-    
-    def forward(self, x):
-        return self.linear(x)
-
-class SNConv2d(nn.Module):
-    def __init__(
-        self,
-        in_channels: int,
-        out_channels: int,
-        kernel_size = 1,
-        stride = 1,
-        padding = 0,
-        dilation = 1,
-        groups: int = 1,
-        bias: bool = True,
-        padding_mode: str = 'zeros',  # TODO: refine this type
-        device=None,
-        dtype=None
-    ):
-        super().__init__()
-        self.conv = nn.Conv2d(in_channels, out_channels, kernel_size=kernel_size, stride=stride, padding=padding, 
-        dilation = 1, groups = 1, bias=bias)
-        # nn.init.xavier_uniform_(self.conv.weight.data, 1.)
-        # if bias:
-        #     nn.init.constant_(self.conv.bias.data, 0.0)
-        self.convout = nn.utils.spectral_norm(self.conv)
-        
-    def forward(self, input):
-        return self.convout(input)
-
-class SNConvTranspose2d(nn.Module):
-    def __init__(
-        self,
-        in_channels: int,
-        out_channels: int,
-        kernel_size = 1,
-        stride = 1,
-        padding = 0,
-        dilation = 1,
-        groups: int = 1,
-        bias: bool = True,
-        padding_mode: str = 'zeros',  # TODO: refine this type
-        device=None,
-        dtype=None
-    ):
-        super().__init__()
-        self.conv = nn.ConvTranspose2d(in_channels, out_channels, kernel_size=kernel_size, stride=stride, padding=padding, 
-        dilation = 1, groups = 1, bias=bias)
-        # nn.init.xavier_uniform_(self.conv.weight.data, 1.)
-        # if bias:
-        #     nn.init.constant_(self.conv.bias.data, 0.0)
-        self.conv = nn.utils.spectral_norm(self.conv)
-        
-    def forward(self, input):
-        return self.conv(input)
-
-
-class SNResnetBlock(nn.Module):
-    def __init__(self, dim, padding_type, use_dropout, use_bias, act_func = nn.LeakyReLU(0.1, True)):
-        super(SNResnetBlock, self).__init__()
-        self.conv_block = self.build_conv_block(dim, padding_type, use_dropout, use_bias, act_func)
-
-    def build_conv_block(self, dim, padding_type, use_dropout, use_bias, act_func):
-        conv_block = []
-        p = 0
-        if padding_type == 'reflect':
-            conv_block += [nn.ReflectionPad2d(1)]
-        elif padding_type == 'replicate':
-            conv_block += [nn.ReplicationPad2d(1)]
-        elif padding_type == 'zero':
-            p = 1
-        else:
-            raise NotImplementedError('padding [%s] is not implemented' % padding_type)
-
-        conv_block += [SNConv2d(dim, dim, kernel_size=3, padding=p, bias=use_bias), act_func]
-        if use_dropout:
-            conv_block += [nn.Dropout(0.5)]
-
-        p = 0
-        if padding_type == 'reflect':
-            conv_block += [nn.ReflectionPad2d(1)]
-        elif padding_type == 'replicate':
-            conv_block += [nn.ReplicationPad2d(1)]
-        elif padding_type == 'zero':
-            p = 1
-        else:
-            raise NotImplementedError('padding [%s] is not implemented' % padding_type)
-        conv_block += [SNConv2d(dim, dim, kernel_size=3, padding=p, bias=use_bias)]
-
-        return nn.Sequential(*conv_block)
-
-    def forward(self, x):
-        """Forward function (with skip connections)"""
-        out = x + self.conv_block(x)  # add skip connections
-        return out
 
 def partition(x, patch_size):
     """
@@ -161,9 +46,9 @@ class Mlp(nn.Module):
         super().__init__()
         out_features = out_features or in_features
         hidden_features = hidden_features or in_features
-        self.fc1 = SNLinear(in_features, hidden_features)
+        self.fc1 = nn.Linear(in_features, hidden_features)
         self.act = act_layer()
-        self.fc2 = SNLinear(hidden_features, out_features)
+        self.fc2 = nn.Linear(hidden_features, out_features)
         self.drop = nn.Dropout(drop)
 
     def forward(self, x):
@@ -199,7 +84,7 @@ class PatchEmbedding(nn.Module):
         self.in_chans = in_chans
         self.embed_dim = embed_dim
 
-        self.proj = SNConv2d(in_chans, embed_dim, kernel_size=patch_emb_size, stride=patch_emb_size)
+        self.proj = nn.Conv2d(in_chans, embed_dim, kernel_size=patch_emb_size, stride=patch_emb_size)
         if norm_layer is not None:
             self.norm = norm_layer(embed_dim)
         else:
@@ -247,7 +132,7 @@ class PatchSliceEmbedding(nn.Module):
         self.in_chans = in_chans
         self.embed_dim = embed_dim
 
-        self.proj = SNConv2d(in_chans, embed_dim, kernel_size=1, stride=1)
+        self.proj = nn.Conv2d(in_chans, embed_dim, kernel_size=1, stride=1)
         if norm_layer is not None:
             self.norm = norm_layer(embed_dim)
         else:
@@ -284,11 +169,11 @@ class PatchProjection(nn.Module):
         norm_layer (nn.Module, optional): Normalization layer.
     """
 
-    def __init__(self, input_resolution, dim, norm_layer=nn.Identity):
+    def __init__(self, input_resolution, dim, norm_layer=nn.LayerNorm):
         super().__init__()
         self.input_resolution = input_resolution
         self.dim = dim
-        self.reduction = SNLinear(4 * dim, 2 * dim, bias=False)
+        self.reduction = nn.Linear(4 * dim, 2 * dim, bias=False)
         self.norm = norm_layer(4 * dim)
 
     def forward(self, x):
@@ -367,9 +252,9 @@ class Attention(nn.Module):
             self.register_buffer("relative_position_index", relative_position_index)
             trunc_normal_(self.relative_position_bias_table, std=.02)
 
-        self.qkv = SNLinear(dim, dim * 3, bias=qkv_bias)
+        self.qkv = nn.Linear(dim, dim * 3, bias=qkv_bias)
         self.attn_drop = nn.Dropout(attn_drop)
-        self.proj = SNLinear(dim, dim)
+        self.proj = nn.Linear(dim, dim)
         self.proj_drop = nn.Dropout(proj_drop)
 
         self.softmax = nn.Softmax(dim=-1)
@@ -439,7 +324,7 @@ class CATBlock(nn.Module):
 
     def __init__(self, dim, input_resolution, num_heads, patch_size=7, mlp_ratio=4., 
                  qkv_bias=True, qk_scale=None, drop=0., attn_drop=0., drop_path=0.,
-                 act_layer=nn.GELU, norm_layer=nn.Identity, attn_type="ipsa", rpe=True):
+                 act_layer=nn.GELU, norm_layer=nn.LayerNorm, attn_type="ipsa", rpe=True):
         super().__init__()
         self.dim = dim
         self.input_resolution = input_resolution
@@ -461,8 +346,7 @@ class CATBlock(nn.Module):
         self.mlp = Mlp(in_features=dim, hidden_features=mlp_hidden_dim, act_layer=act_layer, drop=drop)
 
     def forward(self, x):
-        B, C, H, W = x.shape
-        x = rearrange(x, 'b c h w -> b (h w) c')
+        H, W = self.input_resolution
         B, L, C = x.shape
         assert L == H * W, "input feature has wrong size"
 
@@ -494,7 +378,6 @@ class CATBlock(nn.Module):
         # FFN
         x = shortcut + self.drop_path(x)
         x = x + self.drop_path(self.mlp(self.norm2(x)))
-        x = rearrange(x, 'b (h w) c -> b c h w', h=H, w=W)
 
         return x
     
@@ -523,7 +406,7 @@ class CATBlock(nn.Module):
         return flops
 
 
-class SNCATLayer(nn.Module):
+class CATLayer(nn.Module):
     """ Basic CAT layer for one stage.
 
     Args:
@@ -544,9 +427,9 @@ class SNCATLayer(nn.Module):
         use_checkpoint (bool): Whether to use checkpointing to save memory.
     """
 
-    def __init__(self, dim, input_resolution, num_heads, patch_size, depth=1, mlp_ratio=4., qkv_bias=True, 
+    def __init__(self, dim, input_resolution, depth, num_heads, patch_size, mlp_ratio=4., qkv_bias=True, 
                  qk_scale=None, drop=0., ipsa_attn_drop=0., cpsa_attn_drop=0., drop_path=0., 
-                 norm_layer=nn.Identity, downsample=None, use_checkpoint=False):
+                 norm_layer=nn.LayerNorm, downsample=None, use_checkpoint=False):
 
         super().__init__()
         self.dim = dim
@@ -563,21 +446,21 @@ class SNCATLayer(nn.Module):
                                                  num_heads=num_heads, patch_size=patch_size,
                                                  mlp_ratio=mlp_ratio, qkv_bias=qkv_bias, 
                                                  qk_scale=qk_scale, drop=drop, 
-                                                 attn_drop=ipsa_attn_drop, drop_path=drop_path,
+                                                 attn_drop=ipsa_attn_drop, drop_path=drop_path[i],
                                                  norm_layer=norm_layer, attn_type="ipsa", rpe=True))
             
             self.cpsa_blocks.append(CATBlock(dim=dim, input_resolution=input_resolution,
                                              num_heads=1, patch_size=patch_size,
                                              mlp_ratio=mlp_ratio, qkv_bias=qkv_bias, 
                                              qk_scale=qk_scale, drop=drop,
-                                             attn_drop=cpsa_attn_drop, drop_path=drop_path,
+                                             attn_drop=cpsa_attn_drop, drop_path=drop_path[i],
                                              norm_layer=norm_layer, attn_type="cpsa", rpe=False))
             
             self.post_ipsa_blocks.append(CATBlock(dim=dim, input_resolution=input_resolution,
                                                   num_heads=num_heads, patch_size=patch_size,
                                                   mlp_ratio=mlp_ratio, qkv_bias=qkv_bias, 
                                                   qk_scale=qk_scale, drop=drop, 
-                                                  attn_drop=ipsa_attn_drop, drop_path=drop_path,
+                                                  attn_drop=ipsa_attn_drop, drop_path=drop_path[i],
                                                   norm_layer=norm_layer, attn_type="ipsa", rpe=True))
 
         # patch projection layer
@@ -589,9 +472,14 @@ class SNCATLayer(nn.Module):
     def forward(self, x):
         num_blocks = len(self.cpsa_blocks)
         for i in range(num_blocks):
-            x = self.pre_ipsa_blocks[i](x)
-            x = self.cpsa_blocks[i](x)
-            x = self.post_ipsa_blocks[i](x)
+            if self.use_checkpoint:
+                x = checkpoint.checkpoint(self.pre_ipsa_blocks[i], x)
+                x = checkpoint.checkpoint(self.cpsa_blocks[i], x)
+                x = checkpoint.checkpoint(self.post_ipsa_blocks[i], x)
+            else:
+                x = checkpoint.checkpoint(self.pre_ipsa_blocks[i], x)
+                x = checkpoint.checkpoint(self.cpsa_blocks[i], x)
+                x = checkpoint.checkpoint(self.post_ipsa_blocks[i], x)
         if self.downsample is not None:
             x = self.downsample(x)
         return x
@@ -608,3 +496,166 @@ class SNCATLayer(nn.Module):
         if self.downsample is not None:
             flops += self.downsample.flops()
         return flops
+
+
+class CAT(nn.Module):
+    """ Implementation of "CAT: Cross Attetion in Vision Transformer".
+
+    Args:
+        img_size (int | tuple(int)): Input image size.
+        patch_emb_size (int | tuple(int)): Patch size in Patch Embedding layer.
+        in_chans (int): Number of input image channels.
+        num_classes (int): Number of classes for classification head.
+        embed_dim (int): Patch embedding dimension.
+        depths (tuple(int)): Number of layers in each stage.
+        num_heads (tuple(int)): Number of attention heads in different layers.
+        patch_size (int): Patch size.
+        mlp_ratio (float): Ratio of mlp hidden dim to embedding dim.
+        qkv_bias (bool): If True, add a learnable bias to query, key, value.
+        qk_scale (float): Default qk scale is head_dim ** -0.5.
+        drop_rate (float): Dropout rate.
+        ipsa_attn_drop (float): Attention dropout rate of InnerPatchSelfAttention.
+        cpsa_attn_drop (float): Attention dropout rate of CrossPatchSelfAttention.
+        drop_path_rate (float): Stochastic depth rate.
+        norm_layer (nn.Module): Normalization layer.
+        ape (bool): If True, add absolute position encoding to the patch embedding.
+        patch_norm (bool): If True, add normalization after patch embedding.
+        slice_emb (bool): If True, use slice method in Patch Embedding layer.
+        use_checkpoint (bool): Whether to use checkpointing to save memory.
+    """
+
+    def __init__(self, img_size=224, patch_emb_size=4, in_chans=3, num_classes=1000,
+                 embed_dim=96, depths=[1, 1, 3, 1], num_heads=[3, 6, 12, 24],
+                 patch_size=7, mlp_ratio=4., qkv_bias=True, qk_scale=None,
+                 drop_rate=0., ipsa_attn_drop=0., cpsa_attn_drop=0., drop_path_rate=0.1,
+                 norm_layer=nn.LayerNorm, ape=False, patch_norm=True, slice_emb=False,
+                 use_checkpoint=False, **kwargs):
+        super().__init__()
+
+        self.num_classes = num_classes
+        self.num_layers = len(depths)
+        self.embed_dim = embed_dim
+        self.use_ape = ape
+        self.patch_norm = patch_norm
+        self.num_features = int(embed_dim * 2 ** (self.num_layers - 1))
+        self.mlp_ratio = mlp_ratio
+
+        # split image into non-overlapping patches with conv method or slice method
+        if slice_emb:
+            self.patch_embed = PatchSliceEmbedding(
+                img_size=img_size, patch_emb_size=patch_emb_size, in_chans=in_chans*16, embed_dim=embed_dim,
+                norm_layer=norm_layer if self.patch_norm else None)
+        else:
+            self.patch_embed = PatchEmbedding(
+                img_size=img_size, patch_emb_size=patch_emb_size, in_chans=in_chans, embed_dim=embed_dim,
+                norm_layer=norm_layer if self.patch_norm else None)
+        num_patches = self.patch_embed.num_patches
+        patches_resolution = self.patch_embed.patches_resolution
+        self.patches_resolution = patches_resolution
+
+        # absolute position encoding
+        if self.use_ape:
+            self.ape = nn.Parameter(torch.zeros(1, num_patches, embed_dim))
+            trunc_normal_(self.ape, std=.02)
+
+        self.pos_drop = nn.Dropout(p=drop_rate)
+
+        # stochastic depth
+        dpr = [x.item() for x in torch.linspace(0, drop_path_rate, sum(depths))]  # stochastic depth decay rule
+
+        # build layers
+        self.layers = nn.ModuleList()
+        for i_layer in range(self.num_layers):
+            layer = CATLayer(dim=int(embed_dim * 2 ** i_layer),
+                             input_resolution=(patches_resolution[0] // (2 ** i_layer), 
+                                               patches_resolution[1] // (2 ** i_layer)),
+                             depth=depths[i_layer],
+                             num_heads=num_heads[i_layer],
+                             patch_size=patch_size,
+                             mlp_ratio=self.mlp_ratio,
+                             qkv_bias=qkv_bias, qk_scale=qk_scale, drop=drop_rate, 
+                             ipsa_attn_drop=ipsa_attn_drop, cpsa_attn_drop=cpsa_attn_drop,
+                             drop_path=dpr[sum(depths[:i_layer]):sum(depths[:i_layer + 1])],
+                             norm_layer=norm_layer,
+                             downsample=PatchProjection if (i_layer < self.num_layers - 1) else None,
+                             use_checkpoint=use_checkpoint)
+            self.layers.append(layer)
+
+        self.norm = norm_layer(self.num_features)
+        self.avgpool = nn.AdaptiveAvgPool1d(1)
+        self.head = nn.Linear(self.num_features, num_classes) if num_classes > 0 else nn.Identity()
+
+        self.apply(self._init_weights)
+
+    def _init_weights(self, m):
+        if isinstance(m, nn.Linear):
+            trunc_normal_(m.weight, std=.02)
+            if isinstance(m, nn.Linear) and m.bias is not None:
+                nn.init.constant_(m.bias, 0)
+        elif isinstance(m, nn.LayerNorm):
+            nn.init.constant_(m.bias, 0)
+            nn.init.constant_(m.weight, 1.0)
+
+    @torch.jit.ignore
+    def no_weight_decay(self):
+        return {'ape'}
+
+    @torch.jit.ignore
+    def no_weight_decay_keywords(self):
+        return {'relative_position_bias_table'}
+
+    def forward_features(self, x):
+        x = self.patch_embed(x)
+        if self.use_ape:
+            x = x + self.ape
+        x = self.pos_drop(x)
+
+        for layer in self.layers:
+            x = layer(x)
+
+        x = self.norm(x)  # B L C
+        x = self.avgpool(x.transpose(1, 2))  # B C 1
+        x = torch.flatten(x, 1)
+        return x
+
+    def forward(self, x):
+        x = self.forward_features(x)
+        x = self.head(x)
+        return x
+
+    def flops(self):
+        flops = 0
+        flops += self.patch_embed.flops()
+        for i, layer in enumerate(self.layers):
+            flops += layer.flops()
+        flops += self.num_features * self.patches_resolution[0] * self.patches_resolution[1] // (2 ** self.num_layers)
+        flops += self.num_features * self.num_classes
+        return flops
+
+
+def build_model(config):
+    model_type = config.MODEL.TYPE
+    if model_type == 'CAT':
+        model = CAT(img_size=config.DATA.IMG_SIZE,
+                    patch_emb_size=config.MODEL.CAT.PATCH_EMB_SIZE,
+                    in_chans=config.MODEL.CAT.IN_CHANS,
+                    num_classes=config.MODEL.NUM_CLASSES,
+                    embed_dim=config.MODEL.CAT.EMBED_DIM,
+                    depths=config.MODEL.CAT.DEPTHS,
+                    num_heads=config.MODEL.CAT.NUM_HEADS,
+                    patch_size=config.MODEL.CAT.PATCH_SIZE,
+                    mlp_ratio=config.MODEL.CAT.MLP_RATIO,
+                    qkv_bias=config.MODEL.CAT.QKV_BIAS,
+                    qk_scale=config.MODEL.CAT.QK_SCALE,
+                    drop_rate=config.MODEL.DROP_RATE,
+                    ipsa_attn_drop=config.MODEL.IPSA_ATTN_DROP,
+                    cpsa_attn_drop=config.MODEL.CPSA_ATTN_DROP,
+                    drop_path_rate=config.MODEL.DROP_PATH_RATE,
+                    ape=config.MODEL.CAT.APE,
+                    patch_norm=config.MODEL.CAT.PATCH_NORM,
+                    slice_emb=config.MODEL.CAT.SLICE_EMB,
+                    use_checkpoint=config.TRAIN.USE_CHECKPOINT)
+    else:
+        raise NotImplementedError(f"Unkown model: {model_type}")
+
+    return model

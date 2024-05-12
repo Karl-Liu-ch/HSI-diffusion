@@ -687,6 +687,121 @@ class SNTransformerDiscriminator(nn.Module):
     def forward(self, x):
         return self.Net(x)
 
+def window_partition(x, window_size):
+    b, c, h_inp, w_inp = x.shape
+    pad_h = (window_size - h_inp % window_size) % window_size
+    pad_w = (window_size - w_inp % window_size) % window_size
+    x = F.pad(x, [0, pad_w, 0, pad_h], mode='reflect').permute(0,2,3,1)
+    B, H, W, C = x.shape
+    x = x.view(B, H // window_size, window_size, W // window_size, window_size, C)
+    windows = x.permute(0, 1, 3, 2, 4, 5).contiguous().view(-1, window_size, window_size, C)
+    windows = windows.permute(0,3,1,2)
+    return windows, h_inp, w_inp
+
+def window_reverse(windows, window_size, H, W, h_inp, w_inp):
+    """
+    Args:
+        windows: (num_windows*B, window_size, window_size, C)
+        window_size (int): Window size
+        H (int): Height of image
+        W (int): Width of image
+
+    Returns:
+        x: (B, H, W, C)
+    """
+    B = int(windows.shape[0] / (H * W / window_size / window_size))
+    x = windows.view(B, H // window_size, W // window_size, window_size, window_size, -1)
+    x = x.permute(0, 1, 3, 2, 4, 5).contiguous().view(B, H, W, -1)
+    return x[:, :h_inp, :w_inp, :]
+
+class SNDualTransformerDiscriminator(nn.Module):
+    def __init__(self, input_nums = 34, n_block = [2,4,4], input_resolution = (128, 128), *args, **kwargs):
+        super().__init__()
+        def ResBlock(dim, input_nums, output_nums, input_resolution, n_blocks = 1):
+            layer = []
+            for i in range(n_blocks):
+                layer += [SN_MSAB(input_nums, dim, input_nums // dim, 1), 
+                        SNCATLayer(dim=input_nums, input_resolution=input_resolution, num_heads=input_nums // dim, patch_size=8)]
+            layer.append(SNConv2d(input_nums, output_nums, kernel_size=(4, 4), stride=(2, 2), padding=(1, 1), bias=False))
+            layer.append(nn.GELU())
+            return layer
+        
+        self.embed = SNConv2d(input_nums, input_nums, kernel_size=4, stride=4, padding=0)
+        new_ch = input_nums
+        self.resblocks = nn.ModuleList()
+        for i in range(len(n_block)):
+            prev_ch = new_ch
+            new_ch = prev_ch * 2
+            self.resblocks.append(nn.ModuleList(ResBlock(input_nums, prev_ch, new_ch, input_resolution, n_blocks=n_block[i])))
+        
+        self.out = nn.Sequential(SNConv2d(new_ch, 1, kernel_size=(4, 4), stride=(1, 1), padding=(0, 0)),
+                    nn.AdaptiveAvgPool2d((1, 1)), 
+                    nn.Flatten(),
+                    )
+        self.apply(self._init_weights)
+    
+    def _init_weights(self, m):
+        if isinstance(m, nn.Linear) or isinstance(m, nn.Conv2d) or isinstance(m, nn.ConvTranspose2d):
+            nn.init.xavier_uniform_(m.weight.data, 1.)
+            if m.bias is not None:
+                nn.init.constant_(m.bias.data, 0.0)
+        elif isinstance(m, nn.LayerNorm):
+            nn.init.constant_(m.bias, 0)
+            nn.init.constant_(m.weight, 1.0)
+
+    def forward(self, x):
+        output = self.embed(x)
+        # features = []
+        for layers in self.resblocks:
+            for layer in layers:
+                output = layer(output)
+            # features.append(output)
+        return self.out(output)
+
+class SNDualTransformerDiscriminator_features(nn.Module):
+    def __init__(self, input_nums = 34, n_block = [2,4,4], input_resolution = (128, 128), *args, **kwargs):
+        super().__init__()
+        def ResBlock(dim, input_nums, output_nums, input_resolution, n_blocks = 1):
+            layer = []
+            for i in range(n_blocks):
+                layer += [SN_MSAB(input_nums, dim, input_nums // dim, 1), 
+                        SNCATLayer(dim=input_nums, input_resolution=input_resolution, num_heads=input_nums // dim, patch_size=8)]
+            layer.append(SNConv2d(input_nums, output_nums, kernel_size=(4, 4), stride=(2, 2), padding=(1, 1), bias=False))
+            layer.append(nn.GELU())
+            return layer
+        
+        self.embed = SNConv2d(input_nums, input_nums, kernel_size=4, stride=4, padding=0)
+        new_ch = input_nums
+        self.resblocks = nn.ModuleList()
+        for i in range(len(n_block)):
+            prev_ch = new_ch
+            new_ch = prev_ch * 2
+            self.resblocks.append(nn.ModuleList(ResBlock(input_nums, prev_ch, new_ch, input_resolution, n_blocks=n_block[i])))
+        
+        self.out = nn.Sequential(SNConv2d(new_ch, 1, kernel_size=(4, 4), stride=(1, 1), padding=(0, 0)),
+                    nn.AdaptiveAvgPool2d((1, 1)), 
+                    nn.Flatten(),
+                    )
+        self.apply(self._init_weights)
+    
+    def _init_weights(self, m):
+        if isinstance(m, nn.Linear) or isinstance(m, nn.Conv2d) or isinstance(m, nn.ConvTranspose2d):
+            nn.init.xavier_uniform_(m.weight.data, 1.)
+            if m.bias is not None:
+                nn.init.constant_(m.bias.data, 0.0)
+        elif isinstance(m, nn.LayerNorm):
+            nn.init.constant_(m.bias, 0)
+            nn.init.constant_(m.weight, 1.0)
+
+    def forward(self, x):
+        output = self.embed(x)
+        features = []
+        for layers in self.resblocks:
+            for layer in layers:
+                output = layer(output)
+            features.append(output)
+        return self.out(output), features
+    
 class DenseLayer(nn.Module):
     def __init__(self, dim):
         super().__init__()
@@ -766,7 +881,10 @@ class Spectral_Discriminator(nn.Module):
         super().__init__()
        
 if __name__ == '__main__':
-    model = SNTransformerDiscriminator(34, [2,2,2])
+    model = SNDualTransformerDiscriminator(34, [2,2,2])
+    x = torch.rand([1, 34, 128, 128])
+    y = model(x)
+    print(y.shape)
     summary(model, (34, 128, 128))
-    total_params = sum(p.numel() for p in model.parameters())
-    print(f"Number of parameters: {total_params}")
+    # total_params = sum(p.numel() for p in model.parameters())
+    # print(f"Number of parameters: {total_params}")

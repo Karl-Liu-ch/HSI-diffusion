@@ -85,7 +85,7 @@ class AutoencoderKL(l.LightningModule):
         features = None
         return posterior, features
 
-    def decode(self, z, features):
+    def decode(self, z, features = None):
         z = self.post_quant_conv(z)
         dec = self.decoder(z)
         return dec

@@ -4,7 +4,7 @@
 #BSUB -q gpua100
 #BSUB -R "select[gpu80gb]"
 ### -- set the job Name --
-#BSUB -J dtn-mstdics
+#BSUB -J dtn-orig
 ### -- ask for number of cores (default: 1) --
 #BSUB -n 8
 ### -- specify that the cores must be on the same host --
@@ -25,8 +25,8 @@
 #BSUB -B
 ### -- Specify the output and error file. %J is the job-id --
 ### -- -o and -e mean append, -oo and -eo mean overwrite --
-#BSUB -o dtn-mstdics%J.out
-#BSUB -e dtn-mstdics%J.err
+#BSUB -o dtn-orig%J.out
+#BSUB -e dtn-orig%J.err
 # -- end of LSF options --
 nvidia-smi
 module load cuda/11.8
@@ -36,6 +36,5 @@ source ./miniconda3/bin/activate
 conda activate pytorch
 cd /zhome/02/b/164706/Master_Courses/thesis/HSI-diffusion/
 export PYTHONUNBUFFERED=1
-# python -u train.py -c configs/dtn_snmstdisc.yaml --gpu_id 0 --batch_size 32 --learning_rate 2e-4 -r --mode train
-python -u train.py -c configs/dtn_snmstdisc.yaml --gpu_id 0 --batch_size 32 --learning_rate 2e-4 -r --mode tuning
+python -u train.py -c configs/dtn_orig.yaml --gpu_id 0 --batch_size 48 --learning_rate 1e-3 -r --mode train --stride 8
 # python -u train.py -c configs/dtn_snmstdisc.yaml --batch_size 12 --mode train --learning_rate 2e-4

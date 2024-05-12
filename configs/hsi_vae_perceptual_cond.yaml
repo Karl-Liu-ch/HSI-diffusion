@@ -1,6 +1,6 @@
-path: /work3/s212645/Spectral_Reconstruction/checkpoint/vae/
+path: /work3/s212645/Spectral_Reconstruction/checkpoint/LDM/cond/
 model:
-  target: models.vae.vae.AutoencoderKL
+  target: models.vae.vae.PerceptualVAE
   params:
     image_key: cond
     monitor: "val/mrae_avg"
@@ -14,26 +14,22 @@ model:
         pixelloss_weight: 10.0
         disc_weight: 0.5
         features_weight: 0.0
-        perceptual_weight: 1.0
-        deltaE_weight: 0.0
-        sam_weight: 0.0
+        perceptual_weight: 0.0
         disc_conditional: False
-        losstype: wasserstein
         discconfig: 
-          target: models.gan.networks.SN_Densenet121_Discriminator
+          target: models.gan.networks.SN_Discriminator
           params:
             input_nums: 3
 
     ddconfig:
       double_z: True
       z_channels: 64
-      resolution: 256
+      resolution: 128
       in_channels: 3
       out_ch: 3
       ch: 31
-      ch_mult: [ 1,2,4 ]  # num_down = len(ch_mult)-1
+      ch_mult: [ 1,2,4,4 ]  # num_down = len(ch_mult)-1
       num_attn_blocks: 1
-      num_res_blocks: 1
       attn_resolutions: [ ]
       dropout: 0.0
 
@@ -41,8 +37,8 @@ model:
 data:
   target: dataset.base.DataModuleFromConfig
   params:
-    batch_size: 4
-    num_workers: 8
+    batch_size: 8
+    num_workers: 32
     train:
       target: dataset.datasets.TrainDataset
       params:
@@ -59,7 +55,7 @@ data:
         crop_size: 256
         valid_ratio: 0.1
         test_ratio: 0.1
-        arg: False
+        arg: True
         datanames: ['ARAD/']
 
 lightning:

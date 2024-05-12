@@ -78,6 +78,17 @@ def deltaELoss(fake, gt):
     color_loss=loss.mean()
     return color_loss
 
+def window_partition(x, window_size):
+    b, c, h_inp, w_inp = x.shape
+    pad_h = (window_size - h_inp % window_size) % window_size
+    pad_w = (window_size - w_inp % window_size) % window_size
+    x = F.pad(x, [0, pad_w, 0, pad_h], mode='reflect').permute(0,2,3,1)
+    B, H, W, C = x.shape
+    x = x.view(B, H // window_size, window_size, W // window_size, window_size, C)
+    windows = x.permute(0, 1, 3, 2, 4, 5).contiguous().view(-1, window_size, window_size, C)
+    windows = windows.permute(0,3,1,2)
+    return windows, h_inp, w_inp
+
 class LossDeltaE(nn.Module):
     def __init__(self):
         super(LossDeltaE, self).__init__()

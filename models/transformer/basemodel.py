@@ -13,6 +13,7 @@ from tqdm import tqdm
 from torchsummary import summary
 import shutil
 from utils import *
+from timm.scheduler.cosine_lr import CosineLRScheduler
 os.environ["CUDA_DEVICE_ORDER"] = 'PCI_BUS_ID'
 
 # if opt.multigpu:
@@ -45,8 +46,8 @@ class TrainModel():
                  learning_rate, 
                  data_root, 
                  patch_size, 
-                 datanames, 
                  batch_size, 
+                 datanames = ['ARAD/'], 
                  image_key = 'label',
                  cond_key = 'cond',
                  loss_type = 'mrae',
@@ -55,8 +56,13 @@ class TrainModel():
                  n_critic = 5,
                  multigpu = False, 
                  noise = False, 
-                 use_feature = True, 
-                 progressive_train = False, **kargs):
+                 use_feature = False, 
+                 random_split_data = True,
+                 progressive_train = False, 
+                 stride = 128, 
+                 padding_tpye = None, 
+                 padding_size:int = 1,
+                 **kargs):
         super().__init__()
         self.image_key = image_key
         self.cond_key = cond_key
@@ -90,11 +96,15 @@ class TrainModel():
         self.patch_size = patch_size
         self.batch_size = batch_size
         self.top_k = 3
+        self.random_split_data=random_split_data
+        self.padding_type = padding_tpye
+        self.padding_size = padding_size
         
         self.lossl1 = criterion_mrae
         self.loss_min = np.ones([self.top_k]) * 1000
         self.loss_type = loss_type
         self.use_feature = use_feature
+        self.stride = stride
         
         self.optimG = optim.Adam(self.G.parameters(), lr=learning_rate, betas=(0.9, 0.999), eps=1e-8)
         self.root = ckpath
@@ -119,14 +129,28 @@ class TrainModel():
     def load_dataset(self):
         # load dataset
         print("\nloading dataset ...")
-        self.train_data = TrainDataset(data_root=self.data_root, crop_size=self.patch_size, valid_ratio = self.valid_ratio, test_ratio=self.test_ratio, datanames = self.datanames, stride=128)
+        self.train_data = TrainDataset(data_root=self.data_root, crop_size=self.patch_size, valid_ratio = self.valid_ratio, test_ratio=self.test_ratio, 
+                                       random_split=self.random_split_data, datanames = self.datanames, stride=self.stride)
         print(f"Iteration per epoch: {len(self.train_data)}")
-        self.val_data = ValidDataset(data_root=self.data_root, crop_size=512, valid_ratio = self.valid_ratio, test_ratio=self.test_ratio, datanames = self.datanames)
+        self.val_data = ValidDataset(data_root=self.data_root, crop_size=512, valid_ratio = self.valid_ratio, test_ratio=self.test_ratio,
+                                     random_split=self.random_split_data, datanames = self.datanames)
         print("Validation set samples: ", len(self.val_data))
         
-    def get_input(self, batch):
+    def get_input(self, batch, padding_type = None, window = 64):
         label = Variable(batch[self.image_key].to(device))
         cond = Variable(batch[self.cond_key].to(device))
+        # b, c, h_inp, w_inp = cond.shape
+        # pad_h = (window - h_inp % window) % window
+        # pad_w = (window - w_inp % window) % window
+        # match padding_type:
+        #     case 'reflect':
+        #         cond = F.pad(cond, [0, pad_w, 0, pad_h], mode='reflect')
+        #         label = F.pad(label, [0, pad_w, 0, pad_h], mode='reflect')
+        #     case 'constant':
+        #         cond = F.pad(cond, [0, pad_w, 0, pad_h], mode='constant', value=0.0)
+        #         label = F.pad(label, [0, pad_w, 0, pad_h], mode='constant', value=0.0)
+        #     case None:
+        #         pass
         return label, cond
 
     def train(self):
@@ -179,10 +203,9 @@ class TrainModel():
             save_top, top_n = self.save_top_k(mrae_loss.detach().cpu().numpy())
             if save_top:
                 self.save_checkpoint(top_k=top_n)
-            print(" Iter[%06d], Epoch[%06d], learning rate : %.9f, Train MRAE: %.9f, Test MRAE: %.9f, "
-                "Test RMSE: %.9f, Test PSNR: %.9f, SAM: %.9f, SID: %.9f " % (self.iteration, 
-                                                                self.epoch, lrG, 
-                                                                losses.avg, mrae_loss, rmse_loss, psnr_loss, sam_loss, sid_loss))
+            print(" Iter[%06d], Epoch[%06d], learning rate : %.9f, Train MRAE: %.9f, Test MRAE: %.9f/%.9f, "
+                "Test RMSE: %.9f, Test PSNR: %.9f, SAM: %.9f, SID: %.9f " % (self.iteration, self.epoch, lrG, losses.avg, mrae_loss, 
+                                                                             self.best_mrae, rmse_loss, psnr_loss, sam_loss, sid_loss))
             if self.progressive_module.early_stop(mrae_loss, losses.avg) and self.progressive_train and  self.patch_size < 512:
                 self.progressive_training()
                 self.progressive_module.reset()
@@ -224,7 +247,7 @@ class TrainModel():
         losses_sid = AverageMeter()
         pbar = tqdm(val_loader)
         for i, batch in enumerate(pbar):
-            label, cond= self.get_input(batch)
+            label, cond= self.get_input(batch, self.padding_type, self.padding_size)
             with torch.no_grad():
                 # compute output
                 output = self.G(cond)
@@ -282,7 +305,7 @@ class TrainModel():
         losses_ssim = AverageMeter()
         count = 0
         for i, batch in enumerate(tqdm(test_loader)):
-            label, cond= self.get_input(batch)
+            label, cond= self.get_input(batch, self.padding_type, self.padding_size)
             rgb_gt = batch['cond'].cuda()
             with torch.no_grad():
                 # compute output
@@ -418,7 +441,7 @@ class TrainModel():
         count = 0
         for test_loader, name in zip(test_loaders, ['ARAD', 'BGU', 'CAVE']):
             for i, batch in enumerate(tqdm(test_loader)):
-                label, cond= self.get_input(batch)
+                label, cond= self.get_input(batch, self.padding_type, self.padding_size)
                 rgb_gt = batch['cond'].cuda()
                 with torch.no_grad():
                     output = self.G(cond)
@@ -465,6 +488,93 @@ class TrainModel():
             f.write(f'MRAE:{losses_mrae.avg}, RMSE: {losses_rmse.avg}, PSNR:{losses_psnr.avg}, SAM: {losses_sam.avg}, SID: {losses_sid.avg}, SSIM: {losses_ssim.avg}, PSNRRGB: {losses_psnrrgb.avg}')
             f.write('\n')
             f.close()
+
+
+class TrainModel_iter(TrainModel):
+    def load_dataset(self, stride = 8):
+        # load dataset
+        print("\nloading dataset ...")
+        self.train_data = TrainDataset(data_root=self.data_root, crop_size=self.patch_size, valid_ratio = self.valid_ratio, test_ratio=self.test_ratio, 
+                                       random_split=self.random_split_data, datanames = self.datanames, stride=stride)
+        print(f"Iteration per epoch: {len(self.train_data)}")
+        self.val_data = ValidDataset(data_root=self.data_root, crop_size=1e8, valid_ratio = self.valid_ratio, test_ratio=self.test_ratio, 
+                                     random_split=self.random_split_data, datanames = self.datanames)
+        print("Validation set samples: ", len(self.val_data))
+        
+    def train(self):
+        self.total_iteration = 400000
+        self.load_dataset()
+        self.schedulerG = CosineLRScheduler(self.optimG,t_initial=self.total_iteration,
+                                            cycle_mul = 1,cycle_decay = 1,lr_min=1e-6,
+                                            cycle_limit=1,t_in_epochs=False)
+        while self.iteration<self.total_iteration:
+            self.G.train()
+            losses = AverageMeter()
+            train_loader = DataLoader(dataset=self.train_data, batch_size=self.batch_size, shuffle=True, num_workers=8,
+                                    pin_memory=True, drop_last=False)
+            if len(self.val_data) > 95:
+                val_loader = DataLoader(dataset=self.val_data, batch_size=self.batch_size, shuffle=False, num_workers=8, pin_memory=True)
+            else:
+                val_loader = DataLoader(dataset=self.val_data, batch_size=1, shuffle=False, num_workers=8, pin_memory=True)
+            for i, batch in enumerate(train_loader):
+                if i % 2000 == 0:
+                    try:
+                        pbar.close()
+                    except:
+                        pass
+                    pbar = tqdm(range(2000))
+                labels, cond = self.get_input(batch, None)
+                if self.noise:
+                    z = torch.randn_like(cond).cuda()
+                    z = torch.concat([z, cond], dim=1)
+                    z = Variable(z)
+                else:
+                    z = cond
+                    
+                x_fake = self.G(z)
+                # train G
+                self.optimG.zero_grad()
+                lrG = self.optimG.param_groups[0]['lr']
+                loss_G = self.criterion(x_fake, labels)
+                loss_deltaE = self.deltaE_criterion(x_fake, labels)
+                loss_G.backward()
+                self.optimG.step()
+                self.schedulerG.step_update(self.iteration)
+                
+                losses.update(loss_G.data)
+                self.writer.add_scalar("MRAE/train", loss_G, self.iteration)
+                self.writer.add_scalar("lr/train", lrG, self.iteration)
+                self.writer.add_scalar("loss_G/train", loss_G, self.iteration)
+                self.iteration = self.iteration+1
+                logs = {'epoch':self.epoch, 'iter':self.iteration, 'lr':'%.9f'%lrG, 'train_losses':'%.9f'%(losses.avg), 'delta E':'%.9f'%(loss_deltaE)}
+                pbar.set_postfix(logs)
+                pbar.update(1)
+
+                if self.iteration % 2000 == 0:
+                    # validation
+                    mrae_loss, rmse_loss, psnr_loss, sam_loss, sid_loss = self.validate(val_loader)
+                    print(f'MRAE:{mrae_loss}, RMSE: {rmse_loss}, PSNR:{psnr_loss}, SAM: {sam_loss}, SID: {sid_loss}')
+                    self.writer.add_scalar("MRAE/val", mrae_loss, self.epoch)
+                    self.writer.add_scalar("RMSE/val", rmse_loss, self.epoch)
+                    self.writer.add_scalar("PSNR/val", psnr_loss, self.epoch)
+                    self.writer.add_scalar("SAM/val", sam_loss, self.epoch)
+                    # Save model
+                    print(f'Saving to {self.root}')
+                    self.save_checkpoint()
+                    if mrae_loss < self.best_mrae:
+                        self.best_mrae = mrae_loss
+                        self.save_checkpoint(True)
+                    save_top, top_n = self.save_top_k(mrae_loss.detach().cpu().numpy())
+                    if save_top:
+                        self.save_checkpoint(top_k=top_n)
+                    print(" Iter[%06d], Epoch[%06d], learning rate : %.9f, Train MRAE: %.9f, Test MRAE: %.9f, "
+                        "Test RMSE: %.9f, Test PSNR: %.9f, SAM: %.9f, SID: %.9f " % (self.iteration, 
+                                                                        self.epoch, lrG, 
+                                                                        losses.avg, mrae_loss, rmse_loss, psnr_loss, sam_loss, sid_loss))
+            if mrae_loss > 100.0: 
+                break
+            self.epoch += 1
+
 
 if __name__ == '__main__':
     # cond= torch.randn([1, 6, 128, 128]).cuda()

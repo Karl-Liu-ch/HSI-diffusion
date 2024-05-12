@@ -18,6 +18,7 @@ from models.vae.Base import BaseModel
 from models.transformer.MST_Plus_Plus import *
 from models.transformer.DTN import DTNBlock, UpSample, DownSample
 from torchsummary import summary
+from ldm.modules.attention import LinearAttention
 
 os.environ["CUDA_DEVICE_ORDER"] = 'PCI_BUS_ID'
 if opt.multigpu:
@@ -34,6 +35,115 @@ def nonlinearity(x):
 
 def GroupNormalize(in_channels, num_groups=31):
     return torch.nn.GroupNorm(num_groups=num_groups, num_channels=in_channels, eps=1e-6, affine=True)
+
+class LinAttnBlock(LinearAttention):
+    """to match AttnBlock usage"""
+    def __init__(self, in_channels):
+        super().__init__(dim=in_channels, heads=1, dim_head=in_channels)
+
+
+class AttnBlock(nn.Module):
+    def __init__(self, in_channels):
+        super().__init__()
+        self.in_channels = in_channels
+
+        self.norm = GroupNormalize(in_channels)
+        self.q = torch.nn.Conv2d(in_channels,
+                                 in_channels,
+                                 kernel_size=1,
+                                 stride=1,
+                                 padding=0)
+        self.k = torch.nn.Conv2d(in_channels,
+                                 in_channels,
+                                 kernel_size=1,
+                                 stride=1,
+                                 padding=0)
+        self.v = torch.nn.Conv2d(in_channels,
+                                 in_channels,
+                                 kernel_size=1,
+                                 stride=1,
+                                 padding=0)
+        self.proj_out = torch.nn.Conv2d(in_channels,
+                                        in_channels,
+                                        kernel_size=1,
+                                        stride=1,
+                                        padding=0)
+
+
+    def forward(self, x):
+        h_ = x
+        h_ = self.norm(h_)
+        q = self.q(h_)
+        k = self.k(h_)
+        v = self.v(h_)
+
+        # compute attention
+        b,c,h,w = q.shape
+        q = q.reshape(b,c,h*w)
+        q = q.permute(0,2,1)   # b,hw,c
+        k = k.reshape(b,c,h*w) # b,c,hw
+        w_ = torch.bmm(q,k)     # b,hw,hw    w[b,i,j]=sum_c q[b,i,c]k[b,c,j]
+        w_ = w_ * (int(c)**(-0.5))
+        w_ = torch.nn.functional.softmax(w_, dim=2)
+
+        # attend to values
+        v = v.reshape(b,c,h*w)
+        w_ = w_.permute(0,2,1)   # b,hw,hw (first hw of k, second of q)
+        h_ = torch.bmm(v,w_)     # b, c,hw (hw of q) h_[b,c,j] = sum_i v[b,c,i] w_[b,i,j]
+        h_ = h_.reshape(b,c,h,w)
+
+        h_ = self.proj_out(h_)
+
+        return x+h_
+
+class Upsample(nn.Module):
+    def __init__(self, in_channels, with_conv):
+        super().__init__()
+        self.with_conv = with_conv
+        if self.with_conv:
+            self.conv = torch.nn.Conv2d(in_channels,
+                                        in_channels,
+                                        kernel_size=3,
+                                        stride=1,
+                                        padding=1)
+
+    def forward(self, x):
+        x = torch.nn.functional.interpolate(x, scale_factor=2.0, mode="nearest")
+        if self.with_conv:
+            x = self.conv(x)
+        return x
+
+def make_attn(in_channels, attn_type="vanilla"):
+    assert attn_type in ["vanilla", "linear", "none"], f'attn_type {attn_type} unknown'
+    print(f"making attention of type '{attn_type}' with {in_channels} in_channels")
+    if attn_type == "vanilla":
+        return AttnBlock(in_channels)
+    elif attn_type == "none":
+        return nn.Identity(in_channels)
+    else:
+        return LinAttnBlock(in_channels)
+
+
+class Downsample(nn.Module):
+    def __init__(self, in_channels, with_conv):
+        super().__init__()
+        self.with_conv = with_conv
+        if self.with_conv:
+            # no asymmetric padding in torch conv, must do it ourselves
+            self.conv = torch.nn.Conv2d(in_channels,
+                                        in_channels,
+                                        kernel_size=3,
+                                        stride=2,
+                                        padding=0)
+
+    def forward(self, x):
+        if self.with_conv:
+            pad = (0,1,0,1)
+            x = torch.nn.functional.pad(x, pad, mode="constant", value=0)
+            x = self.conv(x)
+        else:
+            x = torch.nn.functional.avg_pool2d(x, kernel_size=2, stride=2)
+        return x
 
 class ResnetBlock(nn.Module):
     def __init__(self, *, in_channels, out_channels=None, conv_shortcut=False,
@@ -97,7 +207,7 @@ class ResnetBlock(nn.Module):
         return x+h
 
 class Encoder(nn.Module):
-    def __init__(self, *, ch=31, out_ch, ch_mult=(1,2,4,8), num_attn_blocks,
+    def __init__(self, *, ch, out_ch, ch_mult=(1,2,4,8), num_res_blocks,
                  attn_resolutions, dropout=0.0, resamp_with_conv=True, in_channels,
                  resolution, z_channels, double_z=True, use_linear_attn=False, attn_type="vanilla",
                  **ignore_kwargs):
@@ -106,9 +216,9 @@ class Encoder(nn.Module):
         self.ch = ch
         self.temb_ch = 0
         self.num_resolutions = len(ch_mult)
+        self.num_res_blocks = num_res_blocks
         self.resolution = resolution
         self.in_channels = in_channels
-        self.num_attn_blocks = num_attn_blocks
 
         # downsampling
         self.conv_in = torch.nn.Conv2d(in_channels,
@@ -126,23 +236,33 @@ class Encoder(nn.Module):
             attn = nn.ModuleList()
             block_in = ch*in_ch_mult[i_level]
             block_out = ch*ch_mult[i_level]
-            block = ResnetBlock(in_channels=block_in,
+            for i_block in range(self.num_res_blocks):
+                block.append(ResnetBlock(in_channels=block_in,
                                          out_channels=block_out,
                                          temb_channels=self.temb_ch,
-                                         dropout=dropout)
-            block_in = block_out
-            attn = MSAB(dim=block_in, num_blocks=num_attn_blocks, dim_head=ch, heads=block_in // ch)
+                                         dropout=dropout))
+                block_in = block_out
+                if curr_res in attn_resolutions:
+                    attn.append(make_attn(block_in, attn_type=attn_type))
             down = nn.Module()
             down.block = block
             down.attn = attn
             if i_level != self.num_resolutions-1:
-                down.downsample = nn.Conv2d(block_in, block_in, kernel_size=3, stride=2, padding=1)
+                down.downsample = Downsample(block_in, resamp_with_conv)
                 curr_res = curr_res // 2
             self.down.append(down)
 
         # middle
         self.mid = nn.Module()
-        self.mid.attn_1 = MSAB(dim=block_in, num_blocks=num_attn_blocks, dim_head=ch, heads=block_in // ch)
+        self.mid.block_1 = ResnetBlock(in_channels=block_in,
+                                       out_channels=block_in,
+                                       temb_channels=self.temb_ch,
+                                       dropout=dropout)
+        self.mid.attn_1 = make_attn(block_in, attn_type=attn_type)
+        self.mid.block_2 = ResnetBlock(in_channels=block_in,
+                                       out_channels=block_in,
+                                       temb_channels=self.temb_ch,
+                                       dropout=dropout)
 
         # end
         self.norm_out = GroupNormalize(block_in)
@@ -151,22 +271,6 @@ class Encoder(nn.Module):
                                         kernel_size=3,
                                         stride=1,
                                         padding=1)
-        self.min_window = 128
-        self.apply(self._init_weights)
-
-    def _init_weights(self, m):
-        if isinstance(m, nn.Linear):
-            trunc_normal_(m.weight, std=.02)
-            if m.bias is not None:
-                nn.init.constant_(m.bias, 0)
-        if isinstance(m, nn.Conv2d) or isinstance(m, nn.ConvTranspose2d):
-            nn.init.xavier_uniform_(m.weight, gain=.02)
-            if m.bias is not None:
-                nn.init.constant_(m.bias, 0)
-        elif isinstance(m, nn.LayerNorm):
-            nn.init.constant_(m.bias, 0)
-            nn.init.constant_(m.weight, 1.0)
-
 
     def forward(self, x):
         # timestep embedding
@@ -175,50 +279,25 @@ class Encoder(nn.Module):
         # downsampling
         hs = [self.conv_in(x)]
         for i_level in range(self.num_resolutions):
-            h = self.down[i_level].block(hs[-1], temb)
-            hs.append(h)
-            h = self.down[i_level].attn(hs[-1])
-            hs.append(h)
+            for i_block in range(self.num_res_blocks):
+                h = self.down[i_level].block[i_block](hs[-1], temb)
+                if len(self.down[i_level].attn) > 0:
+                    h = self.down[i_level].attn[i_block](h)
+                hs.append(h)
             if i_level != self.num_resolutions-1:
                 hs.append(self.down[i_level].downsample(hs[-1]))
 
         # middle
         h = hs[-1]
+        h = self.mid.block_1(h, temb)
         h = self.mid.attn_1(h)
+        h = self.mid.block_2(h, temb)
 
         # end
         h = self.norm_out(h)
         h = nonlinearity(h)
         h = self.conv_out(h)
         return h
-
-    def get_features(self, x):
-        # timestep embedding
-        temb = None
-
-        # downsampling
-        hs = [self.conv_in(x)]
-        features = []
-        for i_level in range(self.num_resolutions):
-            h = self.down[i_level].block(hs[-1], temb)
-            hs.append(h)
-            h = self.down[i_level].attn(hs[-1])
-            hs.append(h)
-            features.append(h)
-            if i_level != self.num_resolutions-1:
-                hs.append(self.down[i_level].downsample(hs[-1]))
-
-        # middle
-        h = hs[-1]
-        h = self.mid.attn_1(h)
-        # hs.append(h)
-
-        # end
-        h = self.norm_out(h)
-        # hs.append(h)
-        # h = nonlinearity(h)
-        # h = self.conv_out(h)
-        return features
 
 class CondEncoder(Encoder):
     def forward(self, x):
@@ -229,17 +308,21 @@ class CondEncoder(Encoder):
         hs = [self.conv_in(x)]
         cond_features = [self.conv_in(x)]
         for i_level in range(self.num_resolutions):
-            h = self.down[i_level].block(hs[-1], temb)
-            hs.append(h)
-            h = self.down[i_level].attn(hs[-1])
-            hs.append(h)
+            for i_block in range(self.num_res_blocks):
+                h = self.down[i_level].block[i_block](hs[-1], temb)
+                if len(self.down[i_level].attn) > 0:
+                    h = self.down[i_level].attn[i_block](h)
+                hs.append(h)
             cond_features.append(h)
             if i_level != self.num_resolutions-1:
                 hs.append(self.down[i_level].downsample(hs[-1]))
 
         # middle
         h = hs[-1]
+        h = self.mid.block_1(h, temb)
         h = self.mid.attn_1(h)
+        cond_features.append(h)
+        h = self.mid.block_2(h, temb)
         cond_features.append(h)
 
         # end
@@ -248,8 +331,9 @@ class CondEncoder(Encoder):
         h = self.conv_out(h)
         return h, cond_features
         
+
 class Decoder(nn.Module):
-    def __init__(self, *, ch=31, out_ch, ch_mult=(1,2,4,8), num_attn_blocks,
+    def __init__(self, *, ch, out_ch, ch_mult=(1,2,4,8), num_res_blocks,
                  attn_resolutions, dropout=0.0, resamp_with_conv=True, in_channels,
                  resolution, z_channels, give_pre_end=False, tanh_out=False, use_linear_attn=False,
                  attn_type="vanilla", **ignorekwargs):
@@ -258,7 +342,7 @@ class Decoder(nn.Module):
         self.ch = ch
         self.temb_ch = 0
         self.num_resolutions = len(ch_mult)
-        self.num_attn_blocks = num_attn_blocks
+        self.num_res_blocks = num_res_blocks
         self.resolution = resolution
         self.in_channels = in_channels
         self.give_pre_end = give_pre_end
@@ -281,7 +365,15 @@ class Decoder(nn.Module):
 
         # middle
         self.mid = nn.Module()
-        self.mid.attn_1 = MSAB(dim=block_in, num_blocks=num_attn_blocks, dim_head=ch, heads=block_in // ch)
+        self.mid.block_1 = ResnetBlock(in_channels=block_in,
+                                       out_channels=block_in,
+                                       temb_channels=self.temb_ch,
+                                       dropout=dropout)
+        self.mid.attn_1 = make_attn(block_in, attn_type=attn_type)
+        self.mid.block_2 = ResnetBlock(in_channels=block_in,
+                                       out_channels=block_in,
+                                       temb_channels=self.temb_ch,
+                                       dropout=dropout)
 
         # upsampling
         self.up = nn.ModuleList()
@@ -289,17 +381,19 @@ class Decoder(nn.Module):
             block = nn.ModuleList()
             attn = nn.ModuleList()
             block_out = ch*ch_mult[i_level]
-            block = ResnetBlock(in_channels=block_in,
+            for i_block in range(self.num_res_blocks+1):
+                block.append(ResnetBlock(in_channels=block_in,
                                          out_channels=block_out,
                                          temb_channels=self.temb_ch,
-                                         dropout=dropout)
-            block_in = block_out
-            attn = MSAB(dim=block_in, num_blocks=num_attn_blocks, dim_head=ch, heads=block_in // ch)
+                                         dropout=dropout))
+                block_in = block_out
+                if curr_res in attn_resolutions:
+                    attn.append(make_attn(block_in, attn_type=attn_type))
             up = nn.Module()
             up.block = block
             up.attn = attn
             if i_level != 0:
-                up.upsample = nn.ConvTranspose2d(block_in, block_in, kernel_size=4, stride=2, padding=1)
+                up.upsample = Upsample(block_in, resamp_with_conv)
                 curr_res = curr_res * 2
             self.up.insert(0, up) # prepend to get consistent order
 
@@ -310,20 +404,6 @@ class Decoder(nn.Module):
                                         kernel_size=3,
                                         stride=1,
                                         padding=1)
-        self.apply(self._init_weights)
-
-    def _init_weights(self, m):
-        if isinstance(m, nn.Linear):
-            trunc_normal_(m.weight, std=.02)
-            if m.bias is not None:
-                nn.init.constant_(m.bias, 0)
-        if isinstance(m, nn.Conv2d) or isinstance(m, nn.ConvTranspose2d):
-            nn.init.xavier_uniform_(m.weight, gain=.02)
-            if m.bias is not None:
-                nn.init.constant_(m.bias, 0)
-        elif isinstance(m, nn.LayerNorm):
-            nn.init.constant_(m.bias, 0)
-            nn.init.constant_(m.weight, 1.0)
 
     def forward(self, z):
         #assert z.shape[1:] == self.z_shape[1:]
@@ -336,12 +416,16 @@ class Decoder(nn.Module):
         h = self.conv_in(z)
 
         # middle
+        h = self.mid.block_1(h, temb)
         h = self.mid.attn_1(h)
+        h = self.mid.block_2(h, temb)
 
         # upsampling
         for i_level in reversed(range(self.num_resolutions)):
-            h = self.up[i_level].block(h, temb)
-            h = self.up[i_level].attn(h)
+            for i_block in range(self.num_res_blocks+1):
+                h = self.up[i_level].block[i_block](h, temb)
+                if len(self.up[i_level].attn) > 0:
+                    h = self.up[i_level].attn[i_block](h)
             if i_level != 0:
                 h = self.up[i_level].upsample(h)
 

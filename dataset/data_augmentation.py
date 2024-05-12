@@ -10,12 +10,14 @@ from torch.autograd import Variable
 import os
 import torch
 import torch.nn as nn
-# from options import opt
+from options import opt
 import scipy.io
 import re
 import matplotlib.pyplot as plt
 from torch import randperm
 from tqdm import tqdm
+ONE = opt.notone
+print(ONE)
 
 root = '/work3/s212645/Spectral_Reconstruction/'
 datanames = ['ICVL/', 'ARAD/', 'CAVE/']
@@ -257,7 +259,7 @@ def Resize(hyper, rgb, ycrcb, h, w):
     ycrcb_s = cv2.resize(ycrcb, [h, w], interpolation = cv2.INTER_LINEAR)
     return hyper_s, rgb_s, ycrcb_s
 
-def data_resize(mat, imsize, one = True):
+def data_resize(mat, imsize, one = ONE):
     spectral_images = []
     rgb_images = []
     ycrcb_images = []
@@ -343,7 +345,7 @@ def get_all_patches_with_rescale(mat, imsize, stride):
         ycrcbs += ycrcbpatches
     return spectrals, rgbs, ycrcbs
 
-def get_all_patches(mat, imsize, stride = 128, one = True):
+def get_all_patches(mat, imsize, stride = 128, one = ONE):
     spectrals = []
     rgbs = []
     ycrcbs = []
@@ -368,6 +370,7 @@ def get_all_patches(mat, imsize, stride = 128, one = True):
 
 def normalization(a, a_max, a_min):
     return (a - a_min) / (a_max - a_min)
+    # return a / (a_max - a_min)
 
 if __name__ == '__main__':
     generator = torch.Generator().manual_seed(42)

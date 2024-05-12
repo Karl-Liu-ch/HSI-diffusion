@@ -7,7 +7,7 @@ from torch.utils.data import DataLoader
 from dataset.datasets import TestDataset
 parser = argparse.ArgumentParser(description="Spectral Recovery Toolbox")
 parser.add_argument('--method', type=str, default='sncwgan_dtn')
-parser.add_argument('--datanames', type=list, default=['ARAD/'])
+# parser.add_argument('--datanames', type=list, default=['ARAD/'])
 parser.add_argument("-c",'--config', type=str, default='configs/dtn_sndisc.yaml')
 parser.add_argument('--mode', type=str, default='train')
 parser.add_argument("--batch_size", type=int, default=32, help="batch size")
@@ -16,10 +16,11 @@ parser.add_argument("--learning_rate", type=float, default=4e-4, help="initial l
 # parser.add_argument("--ckpath", type=str, default='/work3/s212645/Spectral_Reconstruction/checkpoint/gan/msdtn/')
 parser.add_argument("--data_root", type=str, default='/work3/s212645/Spectral_Reconstruction/')
 parser.add_argument("--patch_size", type=int, default=128, help="patch size")
-parser.add_argument("--stride", type=int, default=8, help="stride")
+parser.add_argument("--stride", type=int, default=128, help="stride")
 parser.add_argument("--gpu_id", type=str, default='0,1', help='path log files')
 parser.add_argument("--local-rank", type=int)
 parser.add_argument("--multigpu", action='store_true')
+parser.add_argument("--notone", action='store_false')
 parser.add_argument("-r", "--resume", type=str, const=True, default="", nargs="?", help="resume from logdir or checkpoint in logdir",)
 opt = parser.parse_args()
 
@@ -51,6 +52,8 @@ if __name__ == '__main__':
                 # except Exception as ex:
                 #     print(ex)
                 model.train()
+                opt.mode = 'tuning'
+            case 'tuning':
                 model.finetuning()
                 opt.mode = 'test'
             case 'test':
@@ -66,8 +69,9 @@ if __name__ == '__main__':
                 test_loader_bgu = DataLoader(dataset=test_data_bgu, batch_size=1, shuffle=False, num_workers=32, pin_memory=True)
                 test_loader_cave = DataLoader(dataset=test_data_cave, batch_size=1, shuffle=False, num_workers=32, pin_memory=True)
 
-                test_loaders = [test_loader_arad, test_loader_bgu, test_loader_cave]
-                model.test_full_resol(modelname, test_loaders)
+                names = ['ARAD', 'CAVE', 'BGU']
+                test_loaders = [test_loader_arad, test_loader_cave, test_loader_bgu]
+                model.test_full_resol(modelname, test_loaders, names)
                 opt.mode = 'stop'
             case _:
                 run = False
