@@ -138,9 +138,9 @@ class LePEAttention(nn.Module):
         k = self.im2cswin(k)
         v, lepe = self.get_lepe(v, self.get_v)
 
-        # q = q * self.scale
-        # attn = (q @ k.transpose(-2, -1))  # B head N C @ B head C N --> B head N N
-        attn = (F.normalize(q, dim=-1) @ F.normalize(k, dim=-1).transpose(-2, -1)) * self.scale  # B head N C @ B head C N --> B head N N
+        q = q * self.scale
+        attn = (q @ k.transpose(-2, -1))  # B head N C @ B head C N --> B head N N
+        # attn = (F.normalize(q, dim=-1) @ F.normalize(k, dim=-1).transpose(-2, -1)) * self.scale  # B head N C @ B head C N --> B head N N
         attn = nn.functional.softmax(attn, dim=-1, dtype=attn.dtype)
         attn = self.attn_drop(attn)
 

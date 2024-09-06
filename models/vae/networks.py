@@ -14,19 +14,15 @@ from torch.utils.data import DataLoader
 from torch.autograd import Variable
 from options import opt
 import numpy as np
-from models.vae.Base import BaseModel
+# from models.vae.Base import BaseModel
 from models.transformer.MST_Plus_Plus import *
-from models.transformer.DTN import DTNBlock, UpSample, DownSample
+from models.transformer.DT_attn import DTNBlock, UpSample, DownSample
+from models.transformer.SST import SSTLayer, Spectral_MSAB
+from models.transformer.SST_CAT import SSTLayer as SST_CATLayer
+from models.transformer.SST_CSwin import SSTLayer as SST_CSwinLayer
 from torchsummary import summary
 from ldm.modules.attention import LinearAttention
 
-os.environ["CUDA_DEVICE_ORDER"] = 'PCI_BUS_ID'
-if opt.multigpu:
-    os.environ["CUDA_VISIBLE_DEVICES"] = opt.gpu_id
-    local_rank = int(os.environ["LOCAL_RANK"])
-    torch.cuda.set_device(local_rank)
-else:
-    os.environ["CUDA_VISIBLE_DEVICES"] = opt.gpu_id
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
 def nonlinearity(x):
@@ -353,7 +349,7 @@ class Decoder(nn.Module):
         block_in = ch*ch_mult[self.num_resolutions-1]
         curr_res = resolution // 2**(self.num_resolutions-1)
         self.z_shape = (1,z_channels,curr_res,curr_res)
-        print("Working with z of shape {} = {} dimensions.".format(
+        print("Working with z of shape {} = {} dimensions. +++++++++".format(
             self.z_shape, np.prod(self.z_shape)))
 
         # z to block_in
@@ -458,7 +454,7 @@ class FirstStageDecoder(nn.Module):
         block_in = ch*ch_mult[self.num_resolutions-1]
         curr_res = resolution // 2**(self.num_resolutions-1)
         self.z_shape = (1,z_channels,curr_res,curr_res)
-        print("Working with z of shape {} = {} dimensions.".format(
+        print("Working with z of shape {} = {} dimensions. +++++++++".format(
             self.z_shape, np.prod(self.z_shape)))
 
         # z to block_in
@@ -587,11 +583,12 @@ class DiagonalGaussianDistribution(object):
 
 
 class DualTransformerEncoder(nn.Module):
-    def __init__(self, *, ch=31, out_ch, ch_mult=(1,2,4,8), num_attn_blocks,
+    def __init__(self, *, ch=31, out_ch, ch_mult=(1,2,4,8), num_attn_blocks = [1,1,1,1], bottle_neck = 1,
                  attn_resolutions, dropout=0.0, resamp_with_conv=True, in_channels,
-                 resolution, z_channels, double_z=True, use_linear_attn=False, attn_type="vanilla",
+                 resolution, z_channels, double_z=True, use_linear_attn=False, attn_type="vanilla", ckpt_path = None, 
                  **ignore_kwargs):
         super().__init__()
+        assert len(ch_mult) == len(num_attn_blocks)
         if use_linear_attn: attn_type = "linear"
         self.ch = ch
         self.temb_ch = 0
@@ -599,6 +596,7 @@ class DualTransformerEncoder(nn.Module):
         self.resolution = resolution
         self.in_channels = in_channels
         self.num_attn_blocks = num_attn_blocks
+        self.ckpt_path = ckpt_path
 
         # downsampling
         self.conv_in = torch.nn.Conv2d(in_channels,
@@ -627,8 +625,8 @@ class DualTransformerEncoder(nn.Module):
                          input_resolution = [curr_res, curr_res], 
                          num_heads = block_in // ch, 
                          window_size = 8, 
-                         num_block = num_attn_blocks,
-                         num_msab=2)
+                         num_block = num_attn_blocks[i_level],
+                         num_msab=1)
             down = nn.Module()
             down.block = block
             down.attn = attn
@@ -644,8 +642,8 @@ class DualTransformerEncoder(nn.Module):
                          input_resolution = [curr_res, curr_res], 
                          num_heads = block_in // ch, 
                          window_size = 8, 
-                         num_block = num_attn_blocks,
-                         num_msab=2)
+                         num_block = bottle_neck,
+                         num_msab=1)
         # MSAB(dim=block_in, num_blocks=num_attn_blocks, dim_head=ch, heads=block_in // ch)
 
         # end
@@ -655,6 +653,34 @@ class DualTransformerEncoder(nn.Module):
                                         kernel_size=3,
                                         stride=1,
                                         padding=1)
+        
+        self.apply(self._init_weights)
+        if self.ckpt_path is not None:
+            self.init_from_ckpt()
+
+    def _init_weights(self, m):
+        if isinstance(m, (nn.Linear, nn.Conv2d)):
+            trunc_normal_(m.weight, std=.02)
+            if isinstance(m, (nn.Linear, nn.Conv2d)) and m.bias is not None:
+                nn.init.constant_(m.bias, 0)
+        elif isinstance(m, nn.LayerNorm):
+            nn.init.constant_(m.bias, 0)
+            nn.init.constant_(m.weight, 1.0)
+        
+    def init_from_ckpt(self):
+        sd = torch.load(self.ckpt_path, map_location='cpu')['state_dict']
+        encoder_weight = {k: v for k, v in sd.items() if k.startswith("encoder.")}
+        keys = []
+        newkeys = []
+        lenth_head = 8
+        for key in encoder_weight.keys():
+            keys.append(key)
+            newkey = key[lenth_head:]
+            newkeys.append(newkey)
+        for key, newkey in zip(keys, newkeys):
+            encoder_weight[newkey] = encoder_weight.pop(key)
+        self.load_state_dict(encoder_weight, strict=False)
+        print(f'Restore encoder from {self.ckpt_path}')
 
     def forward(self, x):
         # timestep embedding
@@ -675,8 +701,8 @@ class DualTransformerEncoder(nn.Module):
         h = self.mid.attn_1(h)
 
         # end
-        h = self.norm_out(h)
-        h = nonlinearity(h)
+        # h = self.norm_out(h)
+        # h = nonlinearity(h)
         h = self.conv_out(h)
         return h
 
@@ -709,7 +735,7 @@ class DualTransformerEncoder(nn.Module):
         return features
 
 class DualTransformerDecoder(nn.Module):
-    def __init__(self, *, ch=31, out_ch, ch_mult=(1,2,4,8), num_attn_blocks,
+    def __init__(self, *, ch=31, out_ch, ch_mult=(1,2,4,8), num_attn_blocks = [1,1,1,1], bottle_neck = 1,
                  attn_resolutions, dropout=0.0, resamp_with_conv=True, in_channels,
                  resolution, z_channels, give_pre_end=False, tanh_out=False, use_linear_attn=False,
                  attn_type="vanilla", **ignorekwargs):
@@ -729,7 +755,7 @@ class DualTransformerDecoder(nn.Module):
         block_in = ch*ch_mult[self.num_resolutions-1]
         curr_res = resolution // 2**(self.num_resolutions-1)
         self.z_shape = (1,z_channels,curr_res,curr_res)
-        print("Working with z of shape {} = {} dimensions.".format(
+        print("Working with z of shape {} = {} dimensions. +++++++++".format(
             self.z_shape, np.prod(self.z_shape)))
 
         # z to block_in
@@ -746,8 +772,8 @@ class DualTransformerDecoder(nn.Module):
                          input_resolution = [curr_res, curr_res], 
                          num_heads = block_in // ch, 
                          window_size = 8, 
-                         num_block = num_attn_blocks,
-                         num_msab=2)
+                         num_block = bottle_neck,
+                         num_msab=1)
         # MSAB(dim=block_in, num_blocks=num_attn_blocks, dim_head=ch, heads=block_in // ch)
 
         # upsampling
@@ -767,8 +793,8 @@ class DualTransformerDecoder(nn.Module):
                          input_resolution = [curr_res, curr_res], 
                          num_heads = block_out // ch, 
                          window_size = 8, 
-                         num_block = num_attn_blocks,
-                         num_msab=2)
+                         num_block = num_attn_blocks[i_level],
+                         num_msab=1)
             # MSAB(dim=block_in, num_blocks=num_attn_blocks, dim_head=ch, heads=block_in // ch)
             up = nn.Module()
             up.block = block
@@ -787,6 +813,17 @@ class DualTransformerDecoder(nn.Module):
                                         stride=1,
                                         padding=1)
 
+        self.apply(self._init_weights)
+
+    def _init_weights(self, m):
+        if isinstance(m, (nn.Linear, nn.Conv2d)):
+            trunc_normal_(m.weight, std=.02)
+            if isinstance(m, (nn.Linear, nn.Conv2d)) and m.bias is not None:
+                nn.init.constant_(m.bias, 0)
+        elif isinstance(m, nn.LayerNorm):
+            nn.init.constant_(m.bias, 0)
+            nn.init.constant_(m.weight, 1.0)
+        
     def forward(self, z):
         #assert z.shape[1:] == self.z_shape[1:]
         self.last_z_shape = z.shape
@@ -811,16 +848,426 @@ class DualTransformerDecoder(nn.Module):
         if self.give_pre_end:
             return h
 
-        h = self.norm_out(h)
-        h = nonlinearity(h)
+        # h = self.norm_out(h)
+        # h = nonlinearity(h)
         h = self.conv_out(h)
-        if self.tanh_out:
-            h = torch.tanh(h)
         return h
 
+
+class DualTransformerDecoderCond(nn.Module):
+    def __init__(self, *, ch=31, out_ch, ch_mult=(1,2,4,8), num_attn_blocks = [1,1,1,1], bottle_neck = 1,
+                 attn_resolutions, dropout=0.0, resamp_with_conv=True, in_channels,
+                 resolution, z_channels, give_pre_end=False, tanh_out=False, use_linear_attn=False,
+                 attn_type="vanilla", use_cond = False, **ignorekwargs):
+        super().__init__()
+        assert len(ch_mult) == len(num_attn_blocks)
+        if use_linear_attn: attn_type = "linear"
+        self.ch = ch
+        self.temb_ch = 0
+        self.num_resolutions = len(ch_mult)
+        self.num_attn_blocks = num_attn_blocks
+        self.resolution = resolution
+        self.in_channels = in_channels
+        self.give_pre_end = give_pre_end
+        self.tanh_out = tanh_out
+        self.use_cond = use_cond
+
+        # compute in_ch_mult, block_in and curr_res at lowest res
+        in_ch_mult = (1,)+tuple(ch_mult)
+        block_in = ch*ch_mult[self.num_resolutions-1]
+        curr_res = resolution // 2**(self.num_resolutions-1)
+        self.z_shape = (1,z_channels,curr_res,curr_res)
+        print("Working with z of shape {} = {} dimensions. +++++++++".format(
+            self.z_shape, np.prod(self.z_shape)))
+
+        # z to block_in
+        self.conv_in = torch.nn.Conv2d(z_channels,
+                                       block_in,
+                                       kernel_size=3,
+                                       stride=1,
+                                       padding=1)
+
+        # middle
+        self.mid = nn.Module()
+        self.mid.attn_1 = DTNBlock(dim = block_in, 
+                         dim_head = ch, 
+                         input_resolution = [curr_res, curr_res], 
+                         num_heads = block_in // ch, 
+                         window_size = 8, 
+                         num_block = bottle_neck,
+                         num_msab=1)
+        # MSAB(dim=block_in, num_blocks=num_attn_blocks, dim_head=ch, heads=block_in // ch)
+
+        # upsampling
+        self.up = nn.ModuleList()
+        for i_level in reversed(range(self.num_resolutions)):
+            block = nn.ModuleList()
+            attn = nn.ModuleList()
+            block_out = ch*ch_mult[i_level]
+            block += [nn.Conv2d(block_in, block_out, 3, 1, 1)]
+            block_in = block_out
+            if self.use_cond:
+                block += [nn.Conv2d(block_in * 2, block_in, 1, 1, 0, bias=False)]
+            attn = DTNBlock(dim = block_in, 
+                         dim_head = ch, 
+                         input_resolution = [curr_res, curr_res], 
+                         num_heads = block_out // ch, 
+                         window_size = 8, 
+                         num_block = num_attn_blocks[i_level],
+                         num_msab=1)
+            up = nn.Module()
+            up.block = block
+            up.attn = attn
+            if i_level != 0:
+                up.upsample = UpSample(block_in, block_in)
+                curr_res = curr_res * 2
+            self.up.insert(0, up) # prepend to get consistent order
+
+        # end
+        self.norm_out = GroupNormalize(block_in)
+        self.conv_out = torch.nn.Conv2d(block_in,
+                                        out_ch,
+                                        kernel_size=3,
+                                        stride=1,
+                                        padding=1)
+
+        self.apply(self._init_weights)
+
+    def _init_weights(self, m):
+        if isinstance(m, (nn.Linear, nn.Conv2d)):
+            trunc_normal_(m.weight, std=.02)
+            if isinstance(m, (nn.Linear, nn.Conv2d)) and m.bias is not None:
+                nn.init.constant_(m.bias, 0)
+        elif isinstance(m, nn.LayerNorm):
+            nn.init.constant_(m.bias, 0)
+            nn.init.constant_(m.weight, 1.0)
+        
+    def forward(self, z, cond = None):
+        #assert z.shape[1:] == self.z_shape[1:]
+        if self.use_cond:
+            assert cond is not None, 'cond is None'
+        self.last_z_shape = z.shape
+
+        # timestep embedding
+        temb = None
+
+        # z to block_in
+        h = self.conv_in(z)
+
+        # middle
+        h = self.mid.attn_1(h)
+
+        # upsampling
+        for i_level in reversed(range(self.num_resolutions)):
+            if self.use_cond:
+                h = self.up[i_level].block[0](h)
+                h = self.up[i_level].block[1](torch.concat([h, cond[i_level]], dim=1))
+                h = self.up[i_level].attn(h)
+            else:
+                h = self.up[i_level].block[0](h)
+                h = self.up[i_level].attn(h)
+            if i_level != 0:
+                h = self.up[i_level].upsample(h)
+
+        # end
+        if self.give_pre_end:
+            return h
+
+        # h = self.norm_out(h)
+        # h = nonlinearity(h)
+        h = self.conv_out(h)
+        return h
+
+class Spectral_MSAB_Layer(nn.Module):
+    def __init__(self, dim, heads, n_blocks) -> None:
+        super().__init__()
+        self.layer = nn.ModuleList([])
+        for i in range(n_blocks):
+            self.layer.append(Spectral_MSAB(dim, heads))
+
+    def forward(self, x):
+        b, c, h, w = x.shape
+        x = rearrange(x, 'b c h w -> b (h w) c')
+        for layer in self.layer:
+            x = layer(x, h, w)
+        x = rearrange(x, 'b (h w) c -> b c h w', h = h, w = w)
+        return x
+
+
+class SSTEncoder(nn.Module):
+    def __init__(self, *, ch=31, out_ch, ch_mult=(1,2,4,8), num_attn_blocks = [1,1,1,1], bottle_neck = 1,
+                 attn_resolutions, dropout=0.0, resamp_with_conv=True, in_channels,
+                 resolution, z_channels, double_z=True, use_linear_attn=False, attn_type="vanilla", ckpt_path = None, 
+                 **ignore_kwargs):
+        super().__init__()
+        assert len(ch_mult) == len(num_attn_blocks)
+        if use_linear_attn: attn_type = "linear"
+        self.ch = ch
+        self.temb_ch = 0
+        self.num_resolutions = len(ch_mult)
+        self.resolution = resolution
+        self.in_channels = in_channels
+        self.num_attn_blocks = num_attn_blocks
+        self.ckpt_path = ckpt_path
+
+        # downsampling
+        self.conv_in = torch.nn.Conv2d(in_channels,
+                                       self.ch,
+                                       kernel_size=3,
+                                       stride=1,
+                                       padding=1)
+
+        curr_res = resolution
+        in_ch_mult = (1,)+tuple(ch_mult)
+        self.in_ch_mult = in_ch_mult
+        self.down = nn.ModuleList()
+        split_size = 1
+        for i_level in range(self.num_resolutions):
+            block = nn.ModuleList()
+            attn = nn.ModuleList()
+            block_in = ch*in_ch_mult[i_level]
+            block_out = ch*ch_mult[i_level]
+            block = nn.Conv2d(block_in, block_out, 3, 1, 1)
+            # ResnetBlock(in_channels=block_in,
+            #                     out_channels=block_out,
+            #                     temb_channels=self.temb_ch,
+            #                     dropout=dropout)
+            block_in = block_out
+            attn = Spectral_MSAB_Layer(dim=block_in, heads=block_in // ch, n_blocks=num_attn_blocks[i_level])
+            # attn = SSTLayer(dim = block_in, 
+            #              head = block_in // ch * 2, 
+            #              resolution = [curr_res, curr_res], 
+            #              split_size=split_size, 
+            #              num_blocks = num_attn_blocks[i_level])
+            down = nn.Module()
+            down.block = block
+            down.attn = attn
+            if i_level != self.num_resolutions-1:
+                down.downsample = DownSample(block_in, block_in)
+                curr_res = curr_res // 2
+                split_size *= 2
+            self.down.append(down)
+
+        # middle
+        self.mid = nn.Module()
+
+        self.mid.attn_1 = Spectral_MSAB_Layer(dim=block_in, heads=block_in // ch, n_blocks=bottle_neck)
+        # self.mid.attn_1 = SSTLayer(dim = block_in, 
+        #                  head = block_in // ch * 2, 
+        #                  resolution = [curr_res, curr_res], 
+        #                  split_size=split_size, 
+        #                  num_blocks = bottle_neck)
+
+        # end
+        self.norm_out = GroupNormalize(block_in, num_groups=block_in)
+        self.conv_out = torch.nn.Conv2d(block_in,
+                                        2*z_channels if double_z else z_channels,
+                                        kernel_size=3,
+                                        stride=1,
+                                        padding=1)
+        
+        self.apply(self._init_weights)
+        if self.ckpt_path is not None:
+            self.init_from_ckpt()
+
+    def _init_weights(self, m):
+        if isinstance(m, (nn.Linear, nn.Conv2d)):
+            trunc_normal_(m.weight, std=.02)
+            if isinstance(m, (nn.Linear, nn.Conv2d)) and m.bias is not None:
+                nn.init.constant_(m.bias, 0)
+        elif isinstance(m, nn.LayerNorm):
+            nn.init.constant_(m.bias, 0)
+            nn.init.constant_(m.weight, 1.0)
+        
+
+    def init_from_ckpt(self):
+        sd = torch.load(self.ckpt_path, map_location='cpu')['state_dict']
+        encoder_weight = {k: v for k, v in sd.items() if k.startswith("encoder.")}
+        keys = []
+        newkeys = []
+        lenth_head = 8
+        for key in encoder_weight.keys():
+            keys.append(key)
+            newkey = key[lenth_head:]
+            newkeys.append(newkey)
+        for key, newkey in zip(keys, newkeys):
+            encoder_weight[newkey] = encoder_weight.pop(key)
+        self.load_state_dict(encoder_weight, strict=False)
+
+    def forward(self, x):
+        # timestep embedding
+        temb = None
+
+        # downsampling
+        hs = [self.conv_in(x)]
+        for i_level in range(self.num_resolutions):
+            h = self.down[i_level].block(hs[-1])
+            hs.append(h)
+            h = self.down[i_level].attn(hs[-1])
+            hs.append(h)
+            if i_level != self.num_resolutions-1:
+                hs.append(self.down[i_level].downsample(hs[-1]))
+
+        # middle
+        h = hs[-1]
+        h = self.mid.attn_1(h)
+
+        # end
+        # h = self.norm_out(h)
+        # h = nonlinearity(h)
+        h = self.conv_out(h)
+        return h
+
+    def get_features(self, x):
+        # timestep embedding
+        temb = None
+
+        # downsampling
+        hs = [self.conv_in(x)]
+        features = []
+        for i_level in range(self.num_resolutions):
+            h = self.down[i_level].block(hs[-1])
+            hs.append(h)
+            h = self.down[i_level].attn(hs[-1])
+            hs.append(h)
+            features.append(h)
+            if i_level != self.num_resolutions-1:
+                hs.append(self.down[i_level].downsample(hs[-1]))
+
+        # middle
+        h = hs[-1]
+        h = self.mid.attn_1(h)
+        # hs.append(h)
+
+        # end
+        h = self.norm_out(h)
+        # hs.append(h)
+        # h = nonlinearity(h)
+        # h = self.conv_out(h)
+        return features
+
+class SSTDecoder(nn.Module):
+    def __init__(self, *, ch=31, out_ch, ch_mult=(1,2,4,8), num_attn_blocks = [1,1,1,1], bottle_neck = 1,
+                 attn_resolutions, dropout=0.0, resamp_with_conv=True, in_channels,
+                 resolution, z_channels, give_pre_end=False, tanh_out=False, use_linear_attn=False,
+                 attn_type="vanilla", **ignorekwargs):
+        super().__init__()
+        if use_linear_attn: attn_type = "linear"
+        self.ch = ch
+        self.temb_ch = 0
+        self.num_resolutions = len(ch_mult)
+        self.num_attn_blocks = num_attn_blocks
+        self.resolution = resolution
+        self.in_channels = in_channels
+        self.give_pre_end = give_pre_end
+        self.tanh_out = tanh_out
+        split_size = 2 ** (self.num_resolutions - 1)
+
+        # compute in_ch_mult, block_in and curr_res at lowest res
+        in_ch_mult = (1,)+tuple(ch_mult)
+        block_in = ch*ch_mult[self.num_resolutions-1]
+        curr_res = resolution // 2**(self.num_resolutions-1)
+        self.z_shape = (1,z_channels,curr_res,curr_res)
+        print("Working with z of shape {} = {} dimensions. +++++++++".format(
+            self.z_shape, np.prod(self.z_shape)))
+
+        # z to block_in
+        self.conv_in = torch.nn.Conv2d(z_channels,
+                                       block_in,
+                                       kernel_size=3,
+                                       stride=1,
+                                       padding=1)
+
+        # middle
+        self.mid = nn.Module()
+        self.mid.attn_1 = Spectral_MSAB_Layer(dim=block_in, heads=block_in // ch, n_blocks=bottle_neck)
+        # self.mid.attn_1 = SSTLayer(dim = block_in, 
+        #                  head = block_in // ch * 2, 
+        #                  resolution = [curr_res, curr_res], 
+        #                  split_size=split_size, 
+        #                  num_blocks = num_attn_blocks[-1])
+
+        # upsampling
+        self.up = nn.ModuleList()
+        for i_level in reversed(range(self.num_resolutions)):
+            block = nn.ModuleList()
+            attn = nn.ModuleList()
+            block_out = ch*ch_mult[i_level]
+            block = nn.Conv2d(block_in, block_out, 3, 1, 1)
+            # ResnetBlock(in_channels=block_in,
+            #                              out_channels=block_out,
+            #                              temb_channels=self.temb_ch,
+            #                              dropout=dropout)
+            block_in = block_out
+            attn = Spectral_MSAB_Layer(dim=block_in, heads=block_in // ch, n_blocks=num_attn_blocks[i_level])
+            # attn = SSTLayer(dim = block_in, 
+            #              head = block_in // ch * 2, 
+            #              resolution = [curr_res, curr_res], 
+            #              split_size=split_size, 
+            #              num_blocks = num_attn_blocks[i_level])
+            # MSAB(dim=block_in, num_blocks=num_attn_blocks, dim_head=ch, heads=block_in // ch)
+            up = nn.Module()
+            up.block = block
+            up.attn = attn
+            if i_level != 0:
+                up.upsample = UpSample(block_in, block_in)
+                # nn.ConvTranspose2d(block_in, block_in, kernel_size=4, stride=2, padding=1)
+                curr_res = curr_res * 2
+                split_size = split_size // 2
+            self.up.insert(0, up) # prepend to get consistent order
+
+        # end
+        self.norm_out = GroupNormalize(block_in, block_in)
+        self.conv_out = torch.nn.Conv2d(block_in,
+                                        out_ch,
+                                        kernel_size=3,
+                                        stride=1,
+                                        padding=1)
+        self.apply(self._init_weights)
+
+    def _init_weights(self, m):
+        if isinstance(m, (nn.Linear, nn.Conv2d)):
+            trunc_normal_(m.weight, std=.02)
+            if isinstance(m, (nn.Linear, nn.Conv2d)) and m.bias is not None:
+                nn.init.constant_(m.bias, 0)
+        elif isinstance(m, nn.LayerNorm):
+            nn.init.constant_(m.bias, 0)
+            nn.init.constant_(m.weight, 1.0)
+        
+
+    def forward(self, z):
+        self.last_z_shape = z.shape
+
+        # timestep embedding
+        temb = None
+
+        # z to block_in
+        h = self.conv_in(z)
+
+        # middle
+        h = self.mid.attn_1(h)
+
+        # upsampling
+        for i_level in reversed(range(self.num_resolutions)):
+            h = self.up[i_level].block(h)
+            h = self.up[i_level].attn(h)
+            if i_level != 0:
+                h = self.up[i_level].upsample(h)
+
+        # end
+        if self.give_pre_end:
+            return h
+        h = self.conv_out(h)
+        return h
+
+
 if __name__ == '__main__':
-    model = DualTransformerEncoder(ch=31, out_ch=31, resolution=128, ch_mult=(1,2,4,4), num_attn_blocks=1, attn_resolutions=8, in_channels=31, z_channels=64).cuda()
-    input = torch.rand([1, 31, 128, 128]).cuda()
-    output = model(input)
+    encoder = DualTransformerEncoder(ch=31, out_ch=6, resolution=128, ch_mult=(1,2,4,4), num_attn_blocks=[1,1,1,1], bottle_neck=1, attn_resolutions=8, in_channels=6, z_channels=64)
+    input = torch.rand([1, 6, 128, 128])
+    output = encoder(input)
     print(output.shape)
-    summary(model, (31, 128, 128))
+    decoder = DualTransformerDecoderCond(ch=31, out_ch=31, resolution=128, ch_mult=(1,2,4,4), num_attn_blocks=[1,1,1,1], bottle_neck=1, attn_resolutions=8, in_channels=31, z_channels=64, use_cond=True)
+    noise = torch.rand([1, 64, 16, 16])
+    cond = encoder.get_features(input)
+    output = decoder(noise, cond)
+    print(output.shape)

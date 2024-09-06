@@ -35,5 +35,10 @@ cd /zhome/02/b/164706/
 source ./miniconda3/bin/activate
 conda activate pytorch
 cd /zhome/02/b/164706/Master_Courses/thesis/HSI-diffusion/
+GPUID=0
 export PYTHONUNBUFFERED=1
-python -u main.py -c configs/hsi_vae_perceptual.yaml -l /work3/s212645/Spectral_Reconstruction/checkpoint/vae_perceptual/ -r /work3/s212645/Spectral_Reconstruction/checkpoint/vae_perceptual/lightning_logs/version_0/checkpoints/last.ckpt
+export NCCL_P2P_DISABLE=1
+# hsi_vae_perceptual
+LOGDIR=/work3/s212645/Spectral_Reconstruction/checkpoint/vae_perceptual/
+CKPT=/work3/s212645/Spectral_Reconstruction/checkpoint/vae_perceptual/lightning_logs/version_0/checkpoints/last.ckpt
+python -u main.py -c configs/ae_kl/hsi_vae_perceptual.yaml -l $LOGDIR --end_epoch 500 --batch_size 64 --gpu_id $GPUID --in_channels 31 --mode train -r $CKPT

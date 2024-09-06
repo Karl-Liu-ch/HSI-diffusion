@@ -1,0 +1,39 @@
+target: models.gan.gan.Gan
+params:
+  ckpath: /work3/s212645/Spectral_Reconstruction/checkpoint/gan/DTN-SNTransformerDiscriminator/
+  valid_ratio: 0.1
+  test_ratio: 0.1
+  num_warmup: 1
+  genconfig:
+    target: models.transformer.DTN
+    params:
+      in_dim: 6
+      out_dim: 31
+      img_size: [128, 128]
+      window_size: 8
+      n_block: [2, 4]
+      bottleblock: 4 
+      num_msab: 1
+      use_conv: False
+      use_cswin: False
+      use_gdfn: False
+
+  disconfig:
+    target: models.gan.networks.SNTransformerDiscriminator
+    params:
+      input_nums: 37
+      n_block: [2,2,2]
+
+  lossconfig:
+    target: models.losses.gan_loss.Loss
+    params:
+      l1_weight: 10.0
+      sam_weight: 0.1
+      features_weight: 0.0
+      deltaE_weight: 1.0
+      disc_weight: 0.0
+      perceptual_weight: 0.0
+      threshold: 1
+      losstype: wasserstein
+      padding_type: reflect
+  

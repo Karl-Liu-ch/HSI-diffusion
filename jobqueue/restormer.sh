@@ -36,5 +36,6 @@ source ./miniconda3/bin/activate
 conda activate pytorch
 cd /zhome/02/b/164706/Master_Courses/thesis/HSI-diffusion/
 export PYTHONUNBUFFERED=1
-python -u train.py -c configs/restormer.yaml --gpu_id 0 --batch_size 16 --mode train --learning_rate 4e-4 -r
+python -u train.py -c configs/sota/restormer.yaml --gpu_id 0 --batch_size 16 --mode train --learning_rate 4e-4
+#  -r
 # python -u train.py -c configs/restormer.yaml --batch_size 12 --mode train --learning_rate 2e-4

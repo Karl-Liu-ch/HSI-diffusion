@@ -2,7 +2,7 @@
 ### General options
 ### –- specify queue --
 #BSUB -q gpua100
-###BSUB -R "select[gpu80gb]"
+#BSUB -R "select[gpu80gb]"
 ### -- set the job Name --
 #BSUB -J ldm_ddpm
 ### -- ask for number of cores (default: 1) --
@@ -35,5 +35,12 @@ cd /zhome/02/b/164706/
 source ./miniconda3/bin/activate
 conda activate pytorch
 cd /zhome/02/b/164706/Master_Courses/thesis/HSI-diffusion/
+GPUID=0
 export PYTHONUNBUFFERED=1
-python -u main.py -c configs/hsi_ldm.yaml -l /work3/s212645/Spectral_Reconstruction/checkpoint/LDM/ldm/ --batch_size 96 -r /work3/s212645/Spectral_Reconstruction/checkpoint/LDM/ldm/lightning_logs/version_0/checkpoints/last.ckpt
+# export CUDA_VISIBLE_DEVICES=0,1
+export NCCL_P2P_DISABLE=1
+# hsi_ldm
+LOGDIR=/work3/s212645/Spectral_Reconstruction/checkpoint/ldm/
+CKPT=/work3/s212645/Spectral_Reconstruction/checkpoint/ldm/lightning_logs/version_0/checkpoints/last.ckpt
+python main.py -c configs/ldm/hsi_ldm.yaml --batch_size 128 --gpu_id $GPUID -l $LOGDIR -r $CKPT
+#  --check_val 5

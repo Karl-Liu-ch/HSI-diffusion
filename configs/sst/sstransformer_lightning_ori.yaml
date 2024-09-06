@@ -1,0 +1,46 @@
+model:
+  target: models.transformer.Base.BaseModel
+  params:
+    epochs: 500
+    logdir: /work3/s212645/Spectral_Reconstruction/checkpoint/SSTransformer/
+    learning_rate: 4e-04
+    cond_key: cond
+    monitor: 'val/mrae_epoch'
+    modelconfig:
+      target: models.transformer.SST.SSTransformer
+      params:
+        in_dim: 3
+        out_dim: 31
+        split_size: 1
+        input_resolution: [128, 128]
+        n_blocks: [2, 2]
+        bottle_depth: 2
+        n_refine: 2
+        patch_size: 8
+
+data:
+  target: dataset.base.DataModuleFromConfig
+  params:
+    batch_size: 40
+    num_workers: 32
+    train:
+      target: dataset.datasets.TrainDataset
+      params:
+        data_root: /work3/s212645/Spectral_Reconstruction/
+        crop_size: 128
+        valid_ratio: 0.053
+        test_ratio: 0.0
+        arg: True
+        datanames: ['ARAD-origin/']
+        random_split: False
+        stride: 64
+    validation:
+      target: dataset.datasets.ValidDataset
+      params:
+        data_root: /work3/s212645/Spectral_Reconstruction/
+        crop_size: 512
+        valid_ratio: 0.053
+        test_ratio: 0.0
+        arg: False
+        datanames: ['ARAD-origin/']
+        random_split: False

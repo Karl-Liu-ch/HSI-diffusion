@@ -22,21 +22,13 @@ from torch.utils.data import DataLoader
 from torch.autograd import Variable
 import numpy as np
 import os
-from Models.Diffusion_Model.networks import Unet
+from models.diffusion_model.networks import Unet
 import platform
 from utils import * 
 from visualize import *
 
-os.environ["KMP_DUPLICATE_LIB_OK"]="TRUE"
 device = 'cuda' if torch.cuda.is_available() else 'cpu'
 
-os.environ["CUDA_DEVICE_ORDER"] = 'PCI_BUS_ID'
-if opt.multigpu:
-    os.environ["CUDA_VISIBLE_DEVICES"] = opt.gpu_id
-    local_rank = int(os.environ["LOCAL_RANK"])
-    torch.cuda.set_device(local_rank)
-else:
-    os.environ["CUDA_VISIBLE_DEVICES"] = opt.gpu_id
 
 criterion_mrae = Loss_MRAE()
 criterion_rmse = Loss_RMSE()
@@ -46,13 +38,6 @@ criterion_sam = Loss_SAM()
 criterion_sid = Loss_SID()
 criterion_fid = Loss_Fid().cuda()
 criterion_ssim = Loss_SSIM().cuda()
-
-def transform(tensor):
-    tensor = tensor.clone().detach()
-    return tensor * 2.0 - 1.0
-def reverse_transform(tensor):
-    tensor = tensor.clone().detach()
-    return (tensor+1.0) / 2.0
 
 def get_beta_schedule(beta_schedule, *, beta_start, beta_end, num_diffusion_timesteps):
     def sigmoid(x):
@@ -133,6 +118,7 @@ def sigmoid_beta_schedule(timesteps):
 
 def extract(a, t, x_shape):
     batch_size = t.shape[0]
+    a = a.to(t.device)
     out = a.gather(-1, t)
     return out.reshape(batch_size, *((1,) * (len(x_shape) - 1))).to(t.device)
 
@@ -285,18 +271,18 @@ class Diffusion():
     def train(self, train_loader, val_loader):
         while self.epoch < self.epochs:
             losses = []
-            for step, (images, labels, rgb_gt) in enumerate(train_loader):
-                images = transform(images)
-                labels = transform(labels)
+            for step, batch in enumerate(train_loader):
+                labels = batch['label']
+                images = batch['ycrcb']
                 labels = labels.to(device)
                 images = images.to(device)
-                images = Variable(images)
                 labels = Variable(labels)
+                images = Variable(images)
                 self.optimizer.zero_grad()
                 batch_size = labels.shape[0]
                 # Algorithm 1 line 3: sample t uniformally for every example in the batch
                 t = torch.randint(0, self.timesteps, (batch_size,), device=device).long()
-                loss = self.p_losses(labels, t, loss_type="huber", cond = images)
+                loss = self.p_losses(labels.cuda(), t.cuda(), loss_type="huber", cond = images.cuda())
                 loss.backward()
                 self.optimizer.step()
                 losses.append(loss.item())
@@ -328,17 +314,14 @@ class Diffusion():
         losses_sid = AverageMeter()
         losses_fid = AverageMeter()
         losses_ssim = AverageMeter()
-        for i, (images, labels, rgb_gt) in enumerate(test_loader):
-            images = transform(images)
-            labels = transform(labels)
+        for step, batch in enumerate(test_loader):
+            labels = batch['label']
+            images = batch['ycrcb']
             images = images.cuda()
             labels = labels.cuda()
             with torch.no_grad():
                 # compute output
                 output = self.sample(image_size=self.img_size, batch_size=images.shape[0], channels=31, cond = images)
-                output = reverse_transform(output)
-                labels = reverse_transform(labels)
-                images = reverse_transform(images)
                 rgbs = []
                 reals = []
                 for j in range(output.shape[0]):
@@ -384,7 +367,9 @@ class Diffusion():
 
     def validate(self, valid_loader, image_size = 128, channels = 31, t_index = 1000):
         MRAE = []
-        for step, (images, labels, rgb_gt) in enumerate(valid_loader):
+        for step, batch in enumerate(valid_loader):
+            labels = batch['label']
+            images = batch['ycrcb']
             labels = labels.to(device)
             images = images.to(device)
             images = Variable(images)
@@ -417,17 +402,12 @@ class Diffusion():
         losses_fid = AverageMeter()
         losses_ssim = AverageMeter()
         for i, (images, labels, rgb_gt) in enumerate(test_loader):
-            images = transform(images)
-            labels = transform(labels)
             images = images.cuda()
             labels = labels.cuda()
             b, c, h, w = labels.shape
             with torch.no_grad():
                 # compute output
                 output = self.sample(image_size=[h, w], batch_size=b, channels=31, cond = images)
-                output = reverse_transform(output)
-                labels = reverse_transform(labels)
-                images = reverse_transform(images)
                 rgbs = []
                 reals = []
                 for j in range(output.shape[0]):
@@ -475,13 +455,13 @@ class Diffusion():
 if __name__ == '__main__':
     timesteps = 1000
     # define beta schedule
-    # betas = linear_beta_schedule(timesteps=timesteps)
-    betas = get_beta_schedule('sigmoid', beta_start=0.00001, beta_end=0.02, num_diffusion_timesteps=timesteps)
+    betas = linear_beta_schedule(timesteps=timesteps)
+    # betas = get_beta_schedule('sigmoid', beta_start=0.00001, beta_end=0.02, num_diffusion_timesteps=timesteps)
     # betas = torch.from_numpy(betas)
 
     Diff = Diffusion(betas=betas, timesteps=timesteps)
 
-    if opt.loadmodel:
+    if opt.resume:
         try:
             Diff.load_checkpoint()
             print('model loaded')
@@ -490,15 +470,15 @@ if __name__ == '__main__':
     
     if opt.mode == 'train':
         train_data = TrainDataset(data_root='/work3/s212645/Spectral_Reconstruction/', crop_size=opt.patch_size, valid_ratio = 0.1, test_ratio=0.1, datanames = ['ARAD/'])
-        train_loader = DataLoader(dataset=train_data, batch_size=opt.batch_size, shuffle=True, num_workers=2, pin_memory=True)
-        val_data = ValidDataset(data_root='/work3/s212645/Spectral_Reconstruction/', crop_size=opt.patch_size, valid_ratio = 0.1, test_ratio=0.1, datanames = ['ARAD/'])
-        val_loader = DataLoader(dataset=val_data, batch_size=opt.batch_size, shuffle=True, num_workers=2, pin_memory=True)
+        train_loader = DataLoader(dataset=train_data, batch_size=opt.batch_size, shuffle=True, num_workers=32, pin_memory=True)
+        val_data = ValidDataset(data_root='/work3/s212645/Spectral_Reconstruction/', crop_size=1e8, valid_ratio = 0.1, test_ratio=0.1, datanames = ['ARAD/'])
+        val_loader = DataLoader(dataset=val_data, batch_size=1, shuffle=True, num_workers=32, pin_memory=True)
         Diff.train(train_loader, val_loader)
     
     elif opt.mode == 'test':
         Diff.load_checkpoint()
-        test_data = TestDataset(data_root='/work3/s212645/Spectral_Reconstruction/', crop_size=opt.patch_size, valid_ratio = 0.1, test_ratio=0.1, datanames = ['ARAD/'])
-        test_loader = DataLoader(dataset=test_data, batch_size=4, shuffle=False, num_workers=2, pin_memory=True)
+        test_data = TestDataset(data_root='/work3/s212645/Spectral_Reconstruction/', crop_size=1e8, valid_ratio = 0.1, test_ratio=0.1, datanames = ['ARAD/'])
+        test_loader = DataLoader(dataset=test_data, batch_size=2, shuffle=False, num_workers=2, pin_memory=True)
         Diff.test(test_loader)
 
     elif opt.mode == 'sample':

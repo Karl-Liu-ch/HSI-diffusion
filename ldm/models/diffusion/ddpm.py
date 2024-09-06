@@ -26,6 +26,7 @@ from ldm.models.autoencoder import VQModelInterface, IdentityFirstStage, Autoenc
 from ldm.modules.diffusionmodules.util import make_beta_schedule, extract_into_tensor, noise_like
 from ldm.models.diffusion.ddim import DDIMSampler
 from utils import *
+from timm.scheduler.cosine_lr import CosineLRScheduler
 
 criterion_mrae = Loss_MRAE()
 criterion_rmse = Loss_RMSE()
@@ -81,9 +82,14 @@ class DDPM(pl.LightningModule):
                  use_positional_encodings=False,
                  learn_logvar=False,
                  logvar_init=0.,
+                 num_warmup = 0,
+                 epochs = 500,
+                 start_sample = 250,
                  ):
         super().__init__()
         assert parameterization in ["eps", "x0"], 'currently only supporting "eps" and "x0"'
+        assert start_sample < epochs, 'epoch must larger than start_sample'
+        self.start_sample = start_sample
         self.parameterization = parameterization
         print(f"{self.__class__.__name__}: Running in {self.parameterization}-prediction mode")
         self.cond_stage_model = None
@@ -96,10 +102,15 @@ class DDPM(pl.LightningModule):
         self.model = DiffusionWrapper(unet_config, conditioning_key)
         count_params(self.model, verbose=True)
         self.use_ema = use_ema
+        self._temp_epoch = 0
+        self.end_epoch = epochs
+        self.num_warmup = num_warmup
+        self._optimizer_states = None
+        self.automatic_optimization = False
         if self.use_ema:
             self.model_ema = LitEma(self.model)
             print(f"Keeping EMAs of {len(list(self.model_ema.buffers()))}.")
-
+        self.sampling_logs_with_images = False
         self.use_scheduler = scheduler_config is not None
         if self.use_scheduler:
             self.scheduler_config = scheduler_config
@@ -206,10 +217,18 @@ class DDPM(pl.LightningModule):
         missing, unexpected = self.load_state_dict(sd, strict=False) if not only_model else self.model.load_state_dict(
             sd, strict=False)
         print(f"Restored from {path} with {len(missing)} missing and {len(unexpected)} unexpected keys")
+        self._temp_epoch = torch.load(path, map_location="cpu")['epoch']
+        print(self._temp_epoch)
         if len(missing) > 0:
             print(f"Missing Keys: {missing}")
         if len(unexpected) > 0:
             print(f"Unexpected Keys: {unexpected}")
+        self.init_optim_ckpt(path)
+
+    def init_optim_ckpt(self, path, ignore_keys=list()):
+        sd = torch.load(path, map_location="cpu")["optimizer_states"]
+        self._optimizer_states = sd
+        print(f"Restored optimizer from {path}")
 
     def q_mean_variance(self, x_start, t):
         """
@@ -296,6 +315,11 @@ class DDPM(pl.LightningModule):
                 loss = torch.nn.functional.mse_loss(target, pred)
             else:
                 loss = torch.nn.functional.mse_loss(target, pred, reduction='none')
+        elif self.loss_type == 'huber':
+            if mean:
+                loss = torch.nn.functional.mse_loss(target, pred) + torch.nn.functional.l1_loss(target, pred)
+            else:
+                loss = torch.nn.functional.mse_loss(target, pred, reduction='none') + torch.nn.functional.l1_loss(target, pred, reduction='none')
         else:
             raise NotImplementedError("unknown loss type '{loss_type}'")
 
@@ -345,11 +369,15 @@ class DDPM(pl.LightningModule):
         return x
 
     def shared_step(self, batch):
-        x, features = self.get_input(batch, self.first_stage_key)
+        x = self.get_input(batch, self.first_stage_key)
+        # x, features = self.get_input(batch, self.first_stage_key)
         loss, loss_dict = self(x)
         return loss, loss_dict
 
     def training_step(self, batch, batch_idx):
+        opt = self.optimizers()
+        sch = self.lr_schedulers()
+        self.toggle_optimizer(opt)
         loss, loss_dict = self.shared_step(batch)
 
         self.log_dict(loss_dict, prog_bar=True,
@@ -361,8 +389,21 @@ class DDPM(pl.LightningModule):
         if self.use_scheduler:
             lr = self.optimizers().param_groups[0]['lr']
             self.log('lr_abs', lr, prog_bar=True, logger=True, on_step=True, on_epoch=False)
+            
+        self.manual_backward(loss)
+        opt.step()
+        opt.zero_grad()
+        self.untoggle_optimizer(opt)
+        sch.step_update(self.global_step)
 
         return loss
+
+    def on_validation_epoch_start(self):
+        self.losses_mrae = AverageMeter()
+        self.losses_rmse = AverageMeter()
+        self.losses_psnr = AverageMeter()
+        self.losses_sam = AverageMeter()
+
 
     @torch.no_grad()
     def validation_step(self, batch, batch_idx):
@@ -372,35 +413,70 @@ class DDPM(pl.LightningModule):
             loss_dict_ema = {key + '_ema': loss_dict_ema[key] for key in loss_dict_ema}
         self.log_dict(loss_dict_no_ema, prog_bar=False, logger=True, on_step=False, on_epoch=True)
         self.log_dict(loss_dict_ema, prog_bar=False, logger=True, on_step=False, on_epoch=True)
+        self.__monitor = loss_dict_ema['val/loss_simple_ema']
+        self.log_dict({'val_loss': self.__monitor}, prog_bar=True, logger=True, on_step=True, on_epoch=True)
+
+        if self.current_epoch % 5 == 0 and self.current_epoch > 0 and self.sampling_logs_with_images:
+            log = self.log_images(batch, N = batch['label'].shape[0])
+            xrec = log['samples']
+            loss_mrae = criterion_mrae(xrec, batch[self.first_stage_key]).detach()
+            loss_rmse = criterion_rmse(xrec, batch[self.first_stage_key]).detach()
+            loss_psnr = criterion_psnr(xrec, batch[self.first_stage_key]).detach()
+            loss_sam = criterion_sam(xrec, batch[self.first_stage_key]).detach()
+            criterion_sam.reset()
+            criterion_psnr.reset()
+            self.log_dict({'mrae': loss_mrae, 'rmse': loss_rmse, 'psnr': loss_psnr, 'sam': loss_sam}, prog_bar=True, logger=True, on_step=True, on_epoch=True)
+            self.losses_mrae.update(loss_mrae.data)
+            self.losses_rmse.update(loss_rmse.data)
+            self.losses_psnr.update(loss_psnr.data)
+            self.losses_sam.update(loss_sam.data)
+
+    def on_validation_epoch_end(self):
+        if self.sampling_logs_with_images:
+            print(f'validation: MRAE: {self.losses_mrae.avg}, RMSE: {self.losses_rmse.avg}, PSNR: {self.losses_psnr.avg}, SAM: {self.losses_sam.avg}.')
+            self.log_dict({'val/mrae_avg': self.losses_mrae.avg, 'val/rmse_avg': self.losses_rmse.avg, 'val/psnr_avg': self.losses_psnr.avg, 'val/sam_avg': self.losses_sam.avg})
+        # if self.current_epoch % 5 == 0 and self.current_epoch > int(self.end_epoch * 0.5) and self.__monitor < 0.2:
+        if self.current_epoch % 5 == 0 and self.current_epoch > self.start_sample:
+            self.sampling_logs_with_images = True
+    
+    def on_train_batch_end(self, *args, **kwargs):
+        if self.use_ema:
+            self.model_ema(self.model)
+
+    def on_test_epoch_start(self):
+        self.losses_mrae = AverageMeter()
+        self.losses_rmse = AverageMeter()
+        self.losses_psnr = AverageMeter()
+        self.losses_sam = AverageMeter()
+
+    @torch.no_grad()
+    def test_step(self, batch, batch_idx):
+        _, loss_dict_no_ema = self.shared_step(batch)
+        with self.ema_scope():
+            _, loss_dict_ema = self.shared_step(batch)
+            loss_dict_ema = {key + '_ema': loss_dict_ema[key] for key in loss_dict_ema}
+        self.log_dict(loss_dict_no_ema, prog_bar=False, logger=True, on_step=False, on_epoch=True)
+        self.log_dict(loss_dict_ema, prog_bar=False, logger=True, on_step=False, on_epoch=True)
+        self.__monitor = loss_dict_ema['val/loss_simple_ema']
+        self.log_dict({'val_loss': self.__monitor}, prog_bar=True, logger=True, on_step=True, on_epoch=True)
+        
         log = self.log_images(batch, N = batch['label'].shape[0])
         xrec = log['samples']
-        if batch_idx == 0:
-            self.losses_mrae = AverageMeter()
-            self.losses_rmse = AverageMeter()
-            self.losses_psnr = AverageMeter()
-            self.losses_sam = AverageMeter()
         loss_mrae = criterion_mrae(xrec, batch[self.first_stage_key]).detach()
         loss_rmse = criterion_rmse(xrec, batch[self.first_stage_key]).detach()
         loss_psnr = criterion_psnr(xrec, batch[self.first_stage_key]).detach()
         loss_sam = criterion_sam(xrec, batch[self.first_stage_key]).detach()
         criterion_sam.reset()
         criterion_psnr.reset()
-        self.log_dict({'mrae': loss_mrae, 'rmse': loss_rmse, 'psnr': loss_psnr, 'sam': loss_sam})
+        self.log_dict({'mrae': loss_mrae, 'rmse': loss_rmse, 'psnr': loss_psnr, 'sam': loss_sam}, prog_bar=True, logger=True, on_step=True, on_epoch=True)
         self.losses_mrae.update(loss_mrae.data)
         self.losses_rmse.update(loss_rmse.data)
         self.losses_psnr.update(loss_psnr.data)
         self.losses_sam.update(loss_sam.data)
-        tensorboard = self.logger.experiment
-        tensorboard.add_image('fake', reconRGB(xrec)[0,:,:,:])
-        tensorboard.add_image('gt', reconRGB(batch[self.first_stage_key])[0,:,:,:])
 
-    def on_validation_epoch_end(self):
+    def on_test_epoch_end(self):
         print(f'validation: MRAE: {self.losses_mrae.avg}, RMSE: {self.losses_rmse.avg}, PSNR: {self.losses_psnr.avg}, SAM: {self.losses_sam.avg}.')
         self.log_dict({'val/mrae_avg': self.losses_mrae.avg, 'val/rmse_avg': self.losses_rmse.avg, 'val/psnr_avg': self.losses_psnr.avg, 'val/sam_avg': self.losses_sam.avg})
-    
-    def on_train_batch_end(self, *args, **kwargs):
-        if self.use_ema:
-            self.model_ema(self.model)
 
     def _get_rows_from_list(self, samples):
         n_imgs_per_row = len(samples)
@@ -454,6 +530,44 @@ class DDPM(pl.LightningModule):
             params = params + [self.logvar]
         opt = torch.optim.AdamW(params, lr=lr)
         return opt
+    
+    def on_train_start(self):
+        self.iter_per_epoch = len(self.trainer.train_dataloader)
+        self.set_current_epoch(self._temp_epoch) # This is being loaded from the model
+        total_batch_idx = self.current_epoch * len(self.trainer.train_dataloader)
+        global_step = total_batch_idx
+        self.set_global_step(global_step)
+        self.iterations = self.global_step
+        print(self.current_epoch, self.global_step)
+
+    def set_current_epoch(self, epoch: int):
+        self.trainer.fit_loop.epoch_progress.current.processed = epoch
+        self.trainer.fit_loop.epoch_progress.current.completed = epoch
+        assert self.current_epoch == epoch, f"{self.current_epoch} != {epoch}"
+
+    def set_global_step(self, global_step: int):
+        self.trainer.fit_loop.epoch_loop.manual_optimization.optim_step_progress.total.completed = (
+            global_step
+        )
+        self.trainer.fit_loop.epoch_loop.automatic_optimization.optim_progress.optimizer.step.total.completed = (
+            global_step
+        )
+        assert self.global_step == global_step, f"{self.global_step} != {global_step}"
+
+    def set_total_batch_idx(self, total_batch_idx: int):
+        self.trainer.fit_loop.epoch_loop.batch_progress.total.ready = (
+            total_batch_idx + 1
+        )
+        self.trainer.fit_loop.epoch_loop.batch_progress.total.completed = (
+            total_batch_idx
+        )
+        assert (
+            self.total_batch_idx == total_batch_idx + 1
+        ), f"{self.total_batch_idx} != {total_batch_idx + 1}"
+
+    @property
+    def total_batch_idx(self) -> int:
+        return self.trainer.fit_loop.epoch_loop.total_batch_idx + 1
 
 
 class LatentDiffusion(DDPM):
@@ -470,7 +584,9 @@ class LatentDiffusion(DDPM):
                  conditioning_key=None,
                  scale_factor=1.0,
                  scale_by_std=False,
+                 use_features = False, 
                  *args, **kwargs):
+        self.use_features = use_features
         self.learning_rate = learning_rate
         self.num_timesteps_cond = default(num_timesteps_cond, 1)
         self.scale_by_std = scale_by_std
@@ -591,8 +707,8 @@ class LatentDiffusion(DDPM):
     def get_learned_conditioning(self, c):
         if self.cond_stage_forward is None:
             if hasattr(self.cond_stage_model, 'encode') and callable(self.cond_stage_model.encode):
-                # c, features = self.cond_stage_model.encode(c)
-                c, features = self.first_stage_model.cond_encode(c)
+                c = self.cond_stage_model.encode(c)
+                # c, features = self.first_stage_model.cond_encode(c)
                 if isinstance(c, DiagonalGaussianDistribution):
                     c = c.mode()
             else:
@@ -600,7 +716,7 @@ class LatentDiffusion(DDPM):
         else:
             assert hasattr(self.cond_stage_model, self.cond_stage_forward)
             c = getattr(self.cond_stage_model, self.cond_stage_forward)(c)
-        return c, features
+        return c
 
     def meshgrid(self, h, w):
         y = torch.arange(0, h).view(h, 1, 1).repeat(1, w, 1)
@@ -716,17 +832,13 @@ class LatentDiffusion(DDPM):
             if not self.cond_stage_trainable or force_c_encode:
                 if isinstance(xc, dict) or isinstance(xc, list):
                     # import pudb; pudb.set_trace()
-                    c, features = self.get_learned_conditioning(xc)
+                    c = self.get_learned_conditioning(xc)
                 else:
-                    c, features = self.get_learned_conditioning(xc.to(self.device))
+                    c = self.get_learned_conditioning(xc.to(self.device))
             else:
                 c = xc
             if bs is not None:
                 c = c[:bs]
-                bs_features = []
-                for feature in features:
-                    bs_features.append(feature[:bs])
-                features = bs_features
 
             if self.use_positional_encodings:
                 pos_x, pos_y = self.compute_latent_shifts(batch)
@@ -739,16 +851,18 @@ class LatentDiffusion(DDPM):
             if self.use_positional_encodings:
                 pos_x, pos_y = self.compute_latent_shifts(batch)
                 c = {'pos_x': pos_x, 'pos_y': pos_y}
-        out = [z, c, features]
+        out = [z, c]
         if return_first_stage_outputs:
-            xrec = self.decode_first_stage(z, features, c)
+            xrec = self.decode_first_stage(z, xc)
             out.extend([x, xrec])
         if return_original_cond:
             out.append(xc)
         return out
 
     @torch.no_grad()
-    def decode_first_stage(self, z, condfeatures, c, predict_cids=False, force_not_quantize=False):
+    def decode_first_stage(self, z, xc = None, predict_cids=False, force_not_quantize=False):
+        if self.use_features:
+            shallow_features = self.first_stage_model.cond_encoder.get_features(xc.to(self.device))
         if predict_cids:
             if z.dim() == 4:
                 z = torch.argmax(z.exp(), dim=1).long()
@@ -799,13 +913,19 @@ class LatentDiffusion(DDPM):
                 if isinstance(self.first_stage_model, VQModelInterface):
                     return self.first_stage_model.decode(z, force_not_quantize=predict_cids or force_not_quantize)
                 else:
-                    return self.first_stage_model.decode(z, condfeatures)
+                    if self.use_features:
+                        return self.first_stage_model.decode(z, shallow_features)
+                    else:
+                        return self.first_stage_model.decode(z)
 
         else:
             if isinstance(self.first_stage_model, VQModelInterface):
                 return self.first_stage_model.decode(z, force_not_quantize=predict_cids or force_not_quantize)
             else:
-                return self.first_stage_model.decode(z, condfeatures, c)
+                if self.use_features:
+                    return self.first_stage_model.decode(z, shallow_features)
+                else:
+                    return self.first_stage_model.decode(z)
 
     # same as above but without decorator
     def differentiable_decode_first_stage(self, z, predict_cids=False, force_not_quantize=False):
@@ -908,7 +1028,7 @@ class LatentDiffusion(DDPM):
             return self.first_stage_model.encode(x)
 
     def shared_step(self, batch, **kwargs):
-        x, c, features = self.get_input(batch, self.first_stage_key)
+        x, c = self.get_input(batch, self.first_stage_key)
         loss = self(x, c)
         return loss
 
@@ -959,7 +1079,7 @@ class LatentDiffusion(DDPM):
             z = z.view((z.shape[0], -1, ks[0], ks[1], z.shape[-1]))  # (bn, nc, ks[0], ks[1], L )
             z_list = [z[:, :, :, :, i] for i in range(z.shape[-1])]
 
-            if self.cond_stage_key in ["image", "LR_image", "segmentation",
+            if self.cond_stage_key in ["image", "LR_image", "segmentation", "cond", "ycrcb",
                                        'bbox_img'] and self.model.conditioning_key:  # todo check for completeness
                 c_key = next(iter(cond.keys()))  # get key
                 c = next(iter(cond.values()))  # get value
@@ -1301,11 +1421,12 @@ class LatentDiffusion(DDPM):
         use_ddim = ddim_steps is not None
 
         log = dict()
-        z, c, features, x, xrec, xc = self.get_input(batch, self.first_stage_key,
+        z, c, x, xrec, xc = self.get_input(batch, self.first_stage_key,
                                            return_first_stage_outputs=True,
                                            force_c_encode=True,
                                            return_original_cond=True,
                                            bs=N)
+        original_cond = xc
         N = min(x.shape[0], N)
         n_row = min(x.shape[0], n_row)
         log["inputs"] = x
@@ -1335,7 +1456,10 @@ class LatentDiffusion(DDPM):
                     t = t.to(self.device).long()
                     noise = torch.randn_like(z_start)
                     z_noisy = self.q_sample(x_start=z_start, t=t, noise=noise)
-                    diffusion_row.append(self.decode_first_stage(z_noisy, features))
+                    if self.use_features:
+                        diffusion_row.append(self.decode_first_stage(z_noisy, original_cond))
+                    else:
+                        diffusion_row.append(self.decode_first_stage(z_noisy))
 
             diffusion_row = torch.stack(diffusion_row)  # n_log_step, n_row, C, H, W
             diffusion_grid = rearrange(diffusion_row, 'n b c h w -> b n c h w')
@@ -1349,7 +1473,10 @@ class LatentDiffusion(DDPM):
                 samples, z_denoise_row = self.sample_log(cond=c,batch_size=N,ddim=use_ddim,
                                                          ddim_steps=ddim_steps,eta=ddim_eta)
                 # samples, z_denoise_row = self.sample(cond=c, batch_size=N, return_intermediates=True)
-            x_samples = self.decode_first_stage(samples, features, c)
+            if self.use_features:
+                x_samples = self.decode_first_stage(samples, original_cond)
+            else:
+                x_samples = self.decode_first_stage(samples)
             log["samples"] = x_samples
             if plot_denoise_rows:
                 denoise_grid = self._get_denoise_row_from_list(z_denoise_row)
@@ -1364,7 +1491,10 @@ class LatentDiffusion(DDPM):
                                                              quantize_denoised=True)
                     # samples, z_denoise_row = self.sample(cond=c, batch_size=N, return_intermediates=True,
                     #                                      quantize_denoised=True)
-                x_samples = self.decode_first_stage(samples.to(self.device), features, c)
+                if self.use_features:
+                    x_samples = self.decode_first_stage(samples.to(self.device), original_cond.to(self.device))
+                else:
+                    x_samples = self.decode_first_stage(samples.to(self.device))
                 log["samples_x0_quantized"] = x_samples
 
             if inpaint:
@@ -1378,7 +1508,10 @@ class LatentDiffusion(DDPM):
 
                     samples, _ = self.sample_log(cond=c,batch_size=N,ddim=use_ddim, eta=ddim_eta,
                                                 ddim_steps=ddim_steps, x0=z[:N], mask=mask)
-                x_samples = self.decode_first_stage(samples.to(self.device), features)
+                if self.use_features:
+                    x_samples = self.decode_first_stage(samples.to(self.device), original_cond.to(self.device))
+                else:
+                    x_samples = self.decode_first_stage(samples.to(self.device))
                 log["samples_inpainting"] = x_samples
                 log["mask"] = mask
 
@@ -1386,7 +1519,10 @@ class LatentDiffusion(DDPM):
                 with self.ema_scope("Plotting Outpaint"):
                     samples, _ = self.sample_log(cond=c, batch_size=N, ddim=use_ddim,eta=ddim_eta,
                                                 ddim_steps=ddim_steps, x0=z[:N], mask=mask)
-                x_samples = self.decode_first_stage(samples.to(self.device), features)
+                if self.use_features:
+                    x_samples = self.decode_first_stage(samples.to(self.device), original_cond.to(self.device))
+                else:
+                    x_samples = self.decode_first_stage(samples.to(self.device))
                 log["samples_outpainting"] = x_samples
 
         if plot_progressive_rows:
@@ -1403,30 +1539,54 @@ class LatentDiffusion(DDPM):
             else:
                 return {key: log[key] for key in return_keys}
         return log
+    
+    # def configure_optimizers(self):
+    #     lr = self.learning_rate
+    #     params = list(self.model.parameters())
+    #     if self.cond_stage_trainable:
+    #         print(f"{self.__class__.__name__}: Also optimizing conditioner params!")
+    #         params = params + list(self.cond_stage_model.parameters())
+    #     if self.learn_logvar:
+    #         print('Diffusion model optimizing logvar')
+    #         params.append(self.logvar)
+    #     opt = torch.optim.AdamW(params, lr=lr)
+    #     if self.use_scheduler:
+    #         assert 'target' in self.scheduler_config
+    #         scheduler = instantiate_from_config(self.scheduler_config)
 
+    #         print("Setting up LambdaLR scheduler...")
+    #         scheduler = [
+    #             {
+    #                 'scheduler': LambdaLR(opt, lr_lambda=scheduler.schedule),
+    #                 'interval': 'step',
+    #                 'frequency': 1
+    #             }]
+    #         return [opt], scheduler
+    #     return opt
+    
     def configure_optimizers(self):
+        self.trainer.fit_loop.setup_data()
+        self.iter_per_epoch = len(self.trainer.train_dataloader)
+        iter_per_epoch = self.iter_per_epoch
         lr = self.learning_rate
         params = list(self.model.parameters())
-        if self.cond_stage_trainable:
-            print(f"{self.__class__.__name__}: Also optimizing conditioner params!")
-            params = params + list(self.cond_stage_model.parameters())
         if self.learn_logvar:
-            print('Diffusion model optimizing logvar')
-            params.append(self.logvar)
+            params = params + [self.logvar]
         opt = torch.optim.AdamW(params, lr=lr)
-        if self.use_scheduler:
-            assert 'target' in self.scheduler_config
-            scheduler = instantiate_from_config(self.scheduler_config)
-
-            print("Setting up LambdaLR scheduler...")
-            scheduler = [
-                {
-                    'scheduler': LambdaLR(opt, lr_lambda=scheduler.schedule),
-                    'interval': 'step',
-                    'frequency': 1
-                }]
-            return [opt], scheduler
-        return opt
+        warmup_lr_init = lr
+        scheduler = CosineLRScheduler(opt,t_initial=(self.end_epoch - self.num_warmup) * iter_per_epoch,
+                                            cycle_mul = 1,cycle_decay = 1,lr_min=1e-6,
+                                            warmup_lr_init=warmup_lr_init,warmup_t=self.num_warmup * iter_per_epoch,
+                                            cycle_limit=1,t_in_epochs=False)
+        if self._optimizer_states is not None:
+            try:
+                opt.load_state_dict(self._optimizer_states[0])
+                for group in opt.param_groups:
+                    group['lr'] = lr
+            except:
+                pass
+        return [opt], scheduler
+    
 
     @torch.no_grad()
     def to_rgb(self, x):

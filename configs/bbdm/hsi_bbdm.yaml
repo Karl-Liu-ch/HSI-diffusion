@@ -1,0 +1,251 @@
+logdir: /work3/s212645/Spectral_Reconstruction/checkpoint/bbdm/
+model:
+  base_learning_rate: 1.0e-5  # set to target_lr by starting main.py with '--scale_lr False'
+  # target: ldm.models.diffusion.BBDM.LatentDiffusion
+  target: ldm.models.diffusion.LatentBrownianBridgeModel.LatentBrownianBridgeModel
+  params:
+    epochs: 500
+    start_sample: 250
+    learning_rate: 2.0e-5
+    # linear_start: 0.0015
+    # linear_end: 0.0195
+    linear_start: 0.00015
+    linear_end: 0.0195
+    num_timesteps_cond: 1
+    log_every_t: 100
+    timesteps: 1000
+    loss_type: l1
+    first_stage_key: "label"
+    cond_stage_key: "ycrcb"
+    image_size: 32
+    channels: 6
+    cond_stage_trainable: False
+    concat_mode: False
+    scale_by_std: False
+    use_ema: False
+    monitor: 'val/loss_simple'
+    # monitor: 'val/loss_simple_ema'
+
+    scheduler_config: # 10000 warmup steps
+      target: ldm.lr_scheduler.LambdaLinearScheduler
+      params:
+        warm_up_steps: [10]
+        cycle_lengths: [5000]
+        f_start: [1.e-6]
+        f_max: [1.]
+        f_min: [ 1.]
+
+    # unet_config:
+    #   target: ldm.modules.diffusionmodules.openaimodel.UNetModel
+    #   params:
+    #     image_size: 32
+    #     in_channels: 6
+    #     out_channels: 6
+    #     model_channels: 192
+    #     attention_resolutions: [ 1, 2, 4, 8 ]   # 32, 16, 8, 4
+    #     num_res_blocks: 2
+    #     channel_mult: [ 1,2,2,4,4 ]  # 32, 16, 8, 4, 2
+    #     num_heads: 8
+    #     transformer_depth: 1
+    #     use_scale_shift_norm: True
+    #     resblock_updown: True
+    
+    unet_config: 
+      target: ldm.modules.diffusionmodules.openaimodel.UNetModel_bbdm
+      params:
+        image_size: 32
+        in_channels: 12
+        model_channels: 192
+        out_channels: 6
+        num_res_blocks: 2
+        attention_resolutions: [ 1, 2, 4, 8 ]
+        channel_mult: [ 1,2,2,4,4 ]
+        conv_resample: True
+        dims: 2
+        num_heads: 8
+        use_scale_shift_norm: True
+        resblock_updown: True
+        use_spatial_transformer: False
+
+
+    first_stage_config:
+      base_learning_rate: 4.5e-6
+      target: models.vae.vae.PerceptualVAE
+      params:
+        epochs: 500
+        image_key: label
+        monitor: "val/mrae_avg"
+        embed_dim: 6
+        learning_rate: 2.0e-4
+        ckpt_path: /work3/s212645/Spectral_Reconstruction/checkpoint/vae_perceptual/lightning_logs/version_0/checkpoints/best.ckpt
+        lossconfig:
+          target: models.vae.sndiscriminator.SpectralNormalizationWDiscriminator
+          params:
+            disc_start: 10000
+            kl_weight: 0.000001
+            l1_weight: 10.0
+            sam_weight: 0.1
+            deltaE_weight: 1.0
+            disc_weight: 0.5
+            features_weight: 0.0
+            perceptual_weight: 0.0
+            disc_conditional: False
+            losstype: wasserstein
+            discconfig: 
+              target: models.gan.networks.SN_Densenet161_Discriminator
+              params:
+                input_nums: 31
+                # n_block: [1,1,1]
+
+        ddconfig:
+          double_z: True
+          z_channels: 6
+          encoder:
+            target: models.vae.networks.DualTransformerEncoder
+            params:
+              double_z: True
+              z_channels: 6
+              resolution: 128
+              in_channels: 31
+              out_ch: 31
+              ch: 31
+              ch_mult: [ 1,2,4 ]  # num_down = len(ch_mult)-1
+              num_attn_blocks: [1,1,1]
+              bottle_neck: 1
+              attn_resolutions: [ ]
+              dropout: 0.0
+          decoder:
+            target: models.vae.networks.DualTransformerDecoder
+            params:
+              double_z: True
+              z_channels: 6
+              resolution: 128
+              in_channels: 31
+              out_ch: 31
+              ch: 31
+              ch_mult: [ 1,2,4 ]  # num_down = len(ch_mult)-1
+              num_attn_blocks: [1,1,1]
+              bottle_neck: 1
+              attn_resolutions: [ ]
+              dropout: 0.0
+
+    cond_stage_config:
+      target: models.vae.vae.PerceptualVAE
+      params:
+        epochs: 500
+        image_key: ycrcb
+        monitor: "val/rmse_avg"
+        embed_dim: 6
+        learning_rate: 2.0e-4
+        ckpt_path: /work3/s212645/Spectral_Reconstruction/checkpoint/vae_perceptual_cond/lightning_logs/version_0/checkpoints/best.ckpt
+        lossconfig:
+          target: models.vae.sndiscriminator.SpectralNormalizationWDiscriminator
+          params:
+            disc_start: 1000
+            kl_weight: 0.000001
+            l1_loss: huber
+            l1_weight: 10.0
+            sam_weight: 0.0
+            deltaE_weight: 0.0
+            disc_weight: 0.5
+            features_weight: 0.0
+            perceptual_weight: 0.0
+            disc_conditional: False
+            losstype: wasserstein
+            discconfig: 
+              target: models.gan.networks.SN_Densenet161_Discriminator
+              params:
+                input_nums: 6
+                # n_block: [1,1,1]
+
+        # ddconfig:
+        #   double_z: True
+        #   z_channels: 6
+        #   resolution: 128
+        #   in_channels: 6
+        #   out_ch: 6
+        #   ch: 31
+        #   ch_mult: [ 1,2,4 ]  # num_down = len(ch_mult)-1
+        #   num_attn_blocks: [1,1,1]
+        #   bottle_neck: 1
+        #   attn_resolutions: [ ]
+        #   dropout: 0.0
+        ddconfig:
+          double_z: True
+          z_channels: 6
+          encoder:
+            target: models.vae.networks.DualTransformerEncoder
+            params:
+              double_z: True
+              z_channels: 6
+              resolution: 128
+              in_channels: 6
+              out_ch: 6
+              ch: 31
+              ch_mult: [ 1,2,4 ]  # num_down = len(ch_mult)-1
+              num_attn_blocks: [1,1,1]
+              bottle_neck: 1
+              attn_resolutions: [ ]
+              dropout: 0.0
+          decoder:
+            target: models.vae.networks.DualTransformerDecoder
+            params:
+              double_z: True
+              z_channels: 6
+              resolution: 128
+              in_channels: 6
+              out_ch: 6
+              ch: 31
+              ch_mult: [ 1,2,4 ]  # num_down = len(ch_mult)-1
+              num_attn_blocks: [1,1,1]
+              bottle_neck: 1
+              attn_resolutions: [ ]
+              dropout: 0.0
+
+
+
+data:
+  target: dataset.base.DataModuleFromConfig
+  params:
+    batch_size: 32
+    num_workers: 0
+    train:
+      target: dataset.datasets.TrainDataset
+      params:
+        data_root: /work3/s212645/Spectral_Reconstruction/
+        crop_size: 128
+        valid_ratio: 0.1
+        test_ratio: 0.1
+        arg: True
+        datanames: ['ARAD/']
+    validation:
+      target: dataset.datasets.ValidDataset
+      params:
+        data_root: /work3/s212645/Spectral_Reconstruction/
+        crop_size: 128
+        valid_ratio: 0.1
+        test_ratio: 0.1
+        arg: False
+        datanames: ['ARAD/']
+    test:
+      target: dataset.datasets.TestDataset
+      params:
+        data_root: /work3/s212645/Spectral_Reconstruction/
+        crop_size: 128
+        valid_ratio: 0
+        test_ratio: 1
+        arg: False
+        datanames: ['CAVE/']
+
+lightning:
+  callbacks:
+    image_logger:
+      target: main.ImageLogger
+      params:
+        batch_frequency: 5000
+        max_images: 8
+        increase_log_steps: False
+
+
+  trainer:
+    benchmark: True

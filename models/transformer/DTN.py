@@ -28,13 +28,7 @@ from models.transformer.agent_swin import SwinTransformerBlock as AgentSwin
 from models.transformer.Base import BaseModel
 from dataset.datasets import TestFullDataset
 from torchsummary import summary
-os.environ["CUDA_DEVICE_ORDER"] = 'PCI_BUS_ID'
-if opt.multigpu:
-    os.environ["CUDA_VISIBLE_DEVICES"] = opt.gpu_id
-    local_rank = int(os.environ["LOCAL_RANK"])
-    torch.cuda.set_device(local_rank)
-else:
-    os.environ["CUDA_VISIBLE_DEVICES"] = opt.gpu_id
+from calflops import calculate_flops
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
 # loss function
@@ -567,19 +561,26 @@ def init_weights_uniform(module):
         print(f'init {module}')
 
 if __name__ == '__main__':
-    model = DTN(in_dim=3, 
+    model = DTN(in_dim=6, 
                     out_dim=31,
-                    img_size=[128, 128], 
+                    img_size=[256, 256], 
                     window_size=8, 
                     n_block=[2,4], 
                     bottleblock = 4, 
                     num_msab=1).to(device)
     # model.apply(init_weights_uniform)
     # model = DTN_multi_stage(in_channels=3, out_channels=31, n_feat=31, img_size=[128, 128], window=32).to(device)
-    input = torch.rand([1, 3, 128, 128]).to(device)
-    output = model(input.float())
-    print(output.shape)
-    summary(model, (3, 256, 256))
+    # input = torch.rand([1, 3, 128, 128]).to(device)
+    # output = model(input.float())
+    # print(output.shape)
+    # summary(model, (3, 256, 256))
+    batch_size = 1
+    input_shape = (batch_size, 6, 256, 256)
+    flops, macs, params = calculate_flops(model=model, 
+                                        input_shape=input_shape,
+                                        output_as_string=True,
+                                        output_precision=4)
+    print("Dual Transformer FLOPs:%s   MACs:%s   Params:%s \n" %(flops, macs, params))
     # spec = TrainDTN(opt, model, model_name='DTN')
     # if opt.loadmodel:
     #     try:

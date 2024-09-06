@@ -17,6 +17,7 @@ import matplotlib.pyplot as plt
 from torch import randperm
 from tqdm import tqdm
 ONE = opt.notone
+SCALE2ONE = False
 print(ONE)
 
 root = '/work3/s212645/Spectral_Reconstruction/'
@@ -78,16 +79,20 @@ def get_dataset(path, list, imsize, stride):
     specs, rgbs, ycrcbs = get_all_mats(path, list, imsize, stride)
     return specs, rgbs, ycrcbs
 
-def get_full_dataset(path, list):
+def get_full_dataset(path, list, one = ONE, scale = SCALE2ONE):
     specs = []
     rgbs = []
     ycrcbs = []
     pbar = tqdm(list)
     for file in pbar:
         mat = scipy.io.loadmat(path+file)
-        spec = np.float32(np.array(mat['cube']))
-        rgb = np.array(mat['rgb'])
-        ycrcb = np.array(mat['ycrcb'])
+        spec = scale2one(np.float32(np.array(mat['cube']))) if scale else np.float32(np.array(mat['cube']))
+        if one:
+            rgb = normalization(np.array(mat['rgb']), np.array(mat['rgb']).max(), np.array(mat['rgb']).min())
+            ycrcb = normalization(np.array(mat['ycrcb']), np.array(mat['ycrcb']).max(), np.array(mat['ycrcb']).min())
+        else:
+            rgb = normalization(np.array(mat['rgb']), 255.0, 0.0)
+            ycrcb = normalization(np.array(mat['ycrcb']), 240.0, 0.0)
         specs.append(spec)
         rgbs.append(rgb)
         ycrcbs.append(ycrcb)
@@ -156,15 +161,6 @@ def split_full(path, valid_ratio, test_ratio, mode = 'train'):
         case 'test':
             datasets = get_full_dataset(path, testlist)
     return datasets
-    # if mode == 'train':
-    #     train_sets = get_full_dataset(path, trainlist)
-    #     return train_sets
-    # elif mode == 'val':
-    #     valid_sets = get_full_dataset(path, validlist)
-    #     return valid_sets
-    # elif mode == 'test':
-    #     test_sets = get_full_dataset(path, testlist)
-    #     return test_sets
 
 def random_split_full(path, valid_ratio, test_ratio, mode = 'train'):
     filelist = os.listdir(path)
@@ -259,11 +255,12 @@ def Resize(hyper, rgb, ycrcb, h, w):
     ycrcb_s = cv2.resize(ycrcb, [h, w], interpolation = cv2.INTER_LINEAR)
     return hyper_s, rgb_s, ycrcb_s
 
-def data_resize(mat, imsize, one = ONE):
+def data_resize(mat, imsize, one = ONE, scale = SCALE2ONE):
     spectral_images = []
     rgb_images = []
     ycrcb_images = []
-    hyper = np.float32(np.array(mat['cube']))
+    # hyper = np.float32(np.array(mat['cube']))
+    hyper = scale2one(np.float32(np.array(mat['cube']))) if scale else np.float32(np.array(mat['cube']))
     if one:
         rgb = normalization(np.array(mat['rgb']), np.array(mat['rgb']).max(), np.array(mat['rgb']).min())
         ycrcb = normalization(np.array(mat['ycrcb']), np.array(mat['ycrcb']).max(), np.array(mat['ycrcb']).min())
@@ -345,21 +342,18 @@ def get_all_patches_with_rescale(mat, imsize, stride):
         ycrcbs += ycrcbpatches
     return spectrals, rgbs, ycrcbs
 
-def get_all_patches(mat, imsize, stride = 128, one = ONE):
+def get_all_patches(mat, imsize, stride = 128, one = ONE, scale = SCALE2ONE):
     spectrals = []
     rgbs = []
     ycrcbs = []
-    # resize_spectrals, resize_rgbs = data_resize(mat, imsize)
-    # for i in range(len(resize_spectrals)):
-    hyper = np.float32(np.array(mat['cube']))
+    # hyper = np.float32(np.array(mat['cube']))
+    hyper = scale2one(np.float32(np.array(mat['cube']))) if scale else np.float32(np.array(mat['cube']))
     if one:
         rgb = normalization(np.array(mat['rgb']), np.array(mat['rgb']).max(), np.array(mat['rgb']).min())
         ycrcb = normalization(np.array(mat['ycrcb']), np.array(mat['ycrcb']).max(), np.array(mat['ycrcb']).min())
     else:
         rgb = normalization(np.array(mat['rgb']), 255.0, 0.0)
         ycrcb = normalization(np.array(mat['ycrcb']), 240.0, 0.0)
-    # hyperpatches = patch_image(hyper, imsize, stride)
-    # rgbpatches = patch_image(rgb, imsize, stride)
     hyperpatches = Im2Patch(hyper, imsize, stride)
     rgbpatches = Im2Patch(rgb, imsize, stride)
     ycrcbpatches = Im2Patch(ycrcb, imsize, stride)
@@ -371,6 +365,9 @@ def get_all_patches(mat, imsize, stride = 128, one = ONE):
 def normalization(a, a_max, a_min):
     return (a - a_min) / (a_max - a_min)
     # return a / (a_max - a_min)
+
+def scale2one(a):
+    return a / a.max()
 
 if __name__ == '__main__':
     generator = torch.Generator().manual_seed(42)

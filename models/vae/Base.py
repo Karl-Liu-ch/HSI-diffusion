@@ -14,13 +14,6 @@ from torch.utils.data import DataLoader
 from torch.autograd import Variable
 from options import opt
 import numpy as np
-os.environ["CUDA_DEVICE_ORDER"] = 'PCI_BUS_ID'
-if opt.multigpu:
-    os.environ["CUDA_VISIBLE_DEVICES"] = opt.gpu_id
-    local_rank = int(os.environ["LOCAL_RANK"])
-    torch.cuda.set_device(local_rank)
-else:
-    os.environ["CUDA_VISIBLE_DEVICES"] = opt.gpu_id
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 # loss function
 criterion_mrae = Loss_MRAE()
@@ -29,8 +22,8 @@ criterion_psnr = Loss_PSNR()
 criterion_psnrrgb = Loss_PSNR()
 criterion_sam = Loss_SAM()
 criterion_sid = Loss_SID()
-criterion_fid = Loss_Fid().cuda()
-criterion_ssim = Loss_SSIM().cuda()
+# criterion_fid = Loss_Fid().to(device)
+# criterion_ssim = Loss_SSIM().to(device)
 
 class BaseModel():
     def __init__(self, opt, model, model_name, multiGPU = False) -> None:
@@ -213,7 +206,7 @@ class BaseModel():
                 rgbs = torch.from_numpy(rgbs).cuda()
                 reals = np.array(reals).transpose(0, 3, 1, 2)
                 reals = torch.from_numpy(reals).cuda()
-                loss_fid = criterion_fid(rgbs, reals)
+                # loss_fid = criterion_fid(rgbs, reals)
                 loss_ssim = criterion_ssim(rgbs, reals)
                 loss_psrnrgb = criterion_psnrrgb(rgbs, reals)
             # record loss
@@ -222,7 +215,7 @@ class BaseModel():
             losses_psnr.update(loss_psnr.data)
             losses_sam.update(loss_sam.data)
             losses_sid.update(loss_sid.data)
-            losses_fid.update(loss_fid.data)
+            # losses_fid.update(loss_fid.data)
             losses_ssim.update(loss_ssim.data)
             losses_psnrrgb.update(loss_psrnrgb.data)
         criterion_sam.reset()

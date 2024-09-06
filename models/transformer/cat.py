@@ -230,7 +230,8 @@ class Attention(nn.Module):
         self.patch_size = patch_size  # Ph, Pw
         self.num_heads = num_heads
         head_dim = dim // num_heads
-        self.scale = qk_scale or head_dim ** -0.5
+        # self.scale = qk_scale or head_dim ** -0.5
+        self.scale = nn.Parameter(torch.ones(num_heads, 1, 1))
         self.rpe = rpe
         
         if self.rpe:
@@ -268,8 +269,9 @@ class Attention(nn.Module):
         qkv = self.qkv(x).reshape(B_, N, 3, self.num_heads, C // self.num_heads).permute(2, 0, 3, 1, 4)
         q, k, v = qkv[0], qkv[1], qkv[2] 
 
-        q = q * self.scale
-        attn = (q @ k.transpose(-2, -1))
+        # q = q * self.scale
+        # attn = (q @ k.transpose(-2, -1))
+        attn = (torch.nn.functional.normalize(q, dim=-1) @ torch.nn.functional.normalize(k, dim=-1).transpose(-2, -1)) * self.scale
         
         if self.rpe:
             relative_position_bias = self.relative_position_bias_table[self.relative_position_index.view(-1)].view(

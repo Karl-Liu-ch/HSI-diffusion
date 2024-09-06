@@ -26,21 +26,6 @@ from models.transformer.sn_swin_transformer_v2 import SwinTransformerBlock as SN
 # from models.transformer.agent_swin import SwinTransformerBlock as AgentSwin
 from models.transformer.Base import BaseModel
 from dataset.datasets import TestFullDataset
-# from pynvml import *
-# nvmlInit()
-# h = nvmlDeviceGetHandleByIndex(1)
-# info = nvmlDeviceGetMemoryInfo(h)
-# print(f'total    : {info.total}')
-# print(f'free     : {info.free}')
-# print(f'used     : {info.used}')
-
-os.environ["CUDA_DEVICE_ORDER"] = 'PCI_BUS_ID'
-if opt.multigpu:
-    os.environ["CUDA_VISIBLE_DEVICES"] = opt.gpu_id
-    local_rank = int(os.environ["LOCAL_RANK"])
-    torch.cuda.set_device(local_rank)
-else:
-    os.environ["CUDA_VISIBLE_DEVICES"] = opt.gpu_id
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
 # loss function

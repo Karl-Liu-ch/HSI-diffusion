@@ -21,10 +21,6 @@ import re
 from dataset.data_augmentation import *
 # from utils import *
 from omegaconf import OmegaConf
-config_path = "configs/hsi_vqgan.yaml"
-cfg = OmegaConf.load(config_path)
-trainconfig = cfg.data.params.train.params
-validconfig = cfg.data.params.validation.params
 
 def Normalize(x):
     return (x - x.min()) / (x.max() - x.min())

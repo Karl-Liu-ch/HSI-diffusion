@@ -15,20 +15,14 @@ from options import opt
 import os
 from torch.utils.data import DataLoader
 from torch.autograd import Variable
-from Models.GAN.networks import *
-from Models.Transformer.MST_Plus_Plus import MST_Plus_Plus
+from models.gan.networks import *
+from models.transformer.MST_Plus_Plus import MST_Plus_Plus
 import functools
 import numpy as np
 import scipy.io
-from Models.Transformer.DTN import DTN
+from models.transformer.DTN import DTN
 
-os.environ["CUDA_DEVICE_ORDER"] = 'PCI_BUS_ID'
-if opt.multigpu:
-    os.environ["CUDA_VISIBLE_DEVICES"] = opt.gpu_id
-    local_rank = int(os.environ["LOCAL_RANK"])
-    torch.cuda.set_device(local_rank)
-else:
-    os.environ["CUDA_VISIBLE_DEVICES"] = opt.gpu_id
+
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
 # loss function

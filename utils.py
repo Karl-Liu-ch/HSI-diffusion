@@ -2,6 +2,8 @@ from __future__ import division
 
 import torch
 import torch.nn as nn
+import torch.nn.functional as F
+from torch.autograd import Variable
 import logging
 import numpy as np
 import os
@@ -21,6 +23,7 @@ from differential_color_functions import *
 from guided_filter import *
 import math
 import warnings
+from inspect import isfunction
 device = 'cuda' if torch.cuda.is_available() else 'cpu'
 rgbfilterpath = 'resources/RGB_Camera_QE.csv'
 camera_filter, filterbands = load_rgb_filter(rgbfilterpath)
@@ -33,6 +36,53 @@ for i in index:
     cam_filter[count,:] = camera_filter[i,:] 
     count += 1
 CAM_FILTER = cam_filter.astype(np.float32)
+
+def exists(x):
+    return x is not None
+
+
+def default(val, d):
+    if exists(val):
+        return val
+    return d() if isfunction(d) else d
+
+def load_from_plmodel(model, ckpt_path, head = 'generator', device = 'cpu'):
+    ckpt = torch.load(ckpt_path, map_location=device)
+    dtn_weights = {k: v for k, v in ckpt["state_dict"].items() if k.startswith(f"{head}.")}
+    keys = []
+    newkeys = []
+    lenth_head = len(head) + 1
+    for key in dtn_weights.keys():
+        keys.append(key)
+        newkey = key[lenth_head:]
+        newkeys.append(newkey)
+    for key, newkey in zip(keys, newkeys):
+        dtn_weights[newkey] = dtn_weights.pop(key)
+    model.load_state_dict(dtn_weights)
+
+def freeze_norm_stats(net):
+    for m in net.modules():
+        if isinstance(m, nn.InstanceNorm1d) or isinstance(m, nn.BatchNorm2d):
+            m.track_running_stats = False
+            m.eval()
+
+def cal_batch_size(model, input_shape, device):
+    model.to(device)
+    torch.cuda.empty_cache()
+    batch_size = 1
+    input_data = Variable(torch.rand([batch_size, input_shape[0], input_shape[1], input_shape[2]]).to(device))
+    torch.cuda.empty_cache()
+    initial_memory = torch.cuda.memory_stats(device)["allocated_bytes.all.peak"]
+    freememmory_now = torch.cuda.mem_get_info()[0]
+    model.eval()
+    output = model(input_data)
+    memory_usage = torch.cuda.memory_stats(device)["allocated_bytes.all.peak"] - initial_memory
+    print("GPU memory usage for batch size {} is {} GB".format(batch_size, memory_usage / 1024 ** 3))
+    print(initial_memory / 1024 ** 3, 'GB')
+    max_batch_size = freememmory_now // memory_usage
+    print(int(max_batch_size))
+    torch.cuda.empty_cache()
+    return int(max_batch_size)
 
 class EarlyStopper:
     def __init__(self, patience=1, min_delta=0, start_epoch = 20, gl_weight = 1.2):

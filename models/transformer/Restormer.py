@@ -287,4 +287,12 @@ class Restormer(nn.Module):
     
 if __name__ == '__main__':
     model = Restormer(3, 31)
-    summary(model, (3, 128, 128))
+    # summary(model, (3, 128, 128))
+    from calflops import calculate_flops
+    batch_size = 1
+    input_shape = (batch_size, 3, 512, 512)
+    flops, macs, params = calculate_flops(model=model, 
+                                        input_shape=input_shape,
+                                        output_as_string=True,
+                                        output_precision=4)
+    print("Restormer FLOPs:%s   MACs:%s   Params:%s \n" %(flops, macs, params))

@@ -17,17 +17,11 @@ from torch.utils.data import DataLoader
 from torch.autograd import Variable
 from torch import autograd
 import functools
-from Models.GAN.networks import *
-from Models.Transformer.DTN_NZ import DTN
-from Models.GAN.attention import SN_AttentionDiscirminator
+from models.gan.networks import *
+from models.transformer.DTN_NZ import DTN
+from models.gan.attention import SN_AttentionDiscirminator
 import numpy as np
-os.environ["CUDA_DEVICE_ORDER"] = 'PCI_BUS_ID'
-if opt.multigpu:
-    os.environ["CUDA_VISIBLE_DEVICES"] = opt.gpu_id
-    local_rank = int(os.environ["LOCAL_RANK"])
-    torch.cuda.set_device(local_rank)
-else:
-    os.environ["CUDA_VISIBLE_DEVICES"] = opt.gpu_id
+
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
 # loss function

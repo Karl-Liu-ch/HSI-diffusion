@@ -13,7 +13,7 @@ from torch.utils.data import DataLoader
 from torch.autograd import Variable
 from torch import autograd
 import functools
-from Models.GAN.SpectralNormalization import *
+from models.gan.SpectralNormalization import *
 
 
 class ResnetBlock(nn.Module):

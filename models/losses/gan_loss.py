@@ -39,7 +39,7 @@ def load_hsi_perceptual_encoder():
         newkeys.append(newkey)
     for key, newkey in zip(keys, newkeys):
         encoder_weights[newkey] = encoder_weights.pop(key)
-    cfg = OmegaConf.load('configs/hsi_vae_perceptual.yaml').model.params.ddconfig
+    cfg = OmegaConf.load('configs/ae_kl/hsi_vae_perceptual.yaml').model.params.ddconfig
     model = Encoder(**cfg).cuda()
     model.load_state_dict(encoder_weights)
     model.eval()
@@ -242,7 +242,7 @@ class Loss(nn.Module):
         rec_loss = l1_loss * self.l1_weight + sam_loss * self.sam_weight + deltaELoss * self.deltaE_weight
         return rec_loss
 
-    def gan_loss(self, discriminator, reconstructions, labels, cond):
+    def gan_loss(self, discriminator, reconstructions, labels, cond, get_features = False):
         recon_cond = torch.concat([reconstructions, cond], dim=1)
         label_cond = torch.concat([labels, cond], dim=1)
         if self.finetune:
@@ -256,6 +256,9 @@ class Loss(nn.Module):
             disc_real = discriminator(label_cond)
             disc_real_features = None
             disc_fake_features = None
+        if get_features:
+            disc_fake_features = discriminator.get_features(recon_cond)
+            disc_real_features = discriminator.get_features(label_cond)
         return disc_real, disc_fake, disc_real_features, disc_fake_features
 
     def adopt_factor(self, global_step):
@@ -301,7 +304,28 @@ class Loss(nn.Module):
         log = {'real loss':disc_real, 'fake loss':disc_fake}
         return total_loss * disc_factor, log
 
-    def forward(self, discriminator, reconstructions, labels, cond, global_step, mode, last_layer = None):
+    def feature_loss(self, discriminator, reconstructions, labels, cond, global_step, last_layer = None):
+        rec_loss = self.recon_loss(reconstructions, labels)
+        disc_factor = self.adopt_factor(global_step)
+        for params in discriminator.parameters():
+            params.requires_grad = False
+        disc_real, disc_fake, real_features, fake_features = self.gan_loss(discriminator, reconstructions, labels, cond, get_features=True)
+        disc_fake = self.criterionGAN(disc_fake, target_is_real=True)
+        # disc_fake = - disc_fake
+        disc_fake = disc_fake * self.calculate_adaptive_weight(rec_loss, disc_fake, last_layer) * disc_factor
+        feature_loss = 0
+        if (real_features is not None) and (fake_features is not None):
+            for k in range(len(fake_features)):
+                feature_loss += F.mse_loss(real_features[k].detach(), fake_features[k])
+        if self.perceptual_weight > 0:
+            perceptual_loss = self.cal_perceptual_loss(reconstructions, labels) * self.perceptual_weight
+        else:
+            perceptual_loss = 0
+        total_loss = disc_fake + rec_loss + feature_loss * self.features_weight * disc_factor + perceptual_loss
+        log = {'gen loss':disc_fake, 'recon loss':rec_loss, 'delta e': self.deltaELoss(reconstructions, labels)}
+        return total_loss, log
+
+    def forward(self, discriminator, reconstructions, labels, cond, global_step, mode, last_layer = None, device = 'cuda'):
         if mode == 'gen':
             total_loss = self.train_gen(discriminator, reconstructions, labels, cond, global_step, last_layer)
             return total_loss

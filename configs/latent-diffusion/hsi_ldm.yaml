@@ -6,7 +6,7 @@ model:
     linear_start: 0.0015
     linear_end: 0.0155
     num_timesteps_cond: 1
-    log_every_t: 200
+    log_every_t: 100
     timesteps: 1000
     loss_type: l1
     first_stage_key: "image"
@@ -37,9 +37,7 @@ model:
         attention_resolutions: [ 8,4,2 ]   # 32, 16, 8, 4
         num_res_blocks: 2
         channel_mult: [ 1,2,4,4 ]  # 32, 16, 8, 4, 2
-        num_heads: 8
-        use_scale_shift_norm: True
-        resblock_updown: True
+        num_heads: 32
 
     first_stage_config:
       base_learning_rate: 4.5e-6

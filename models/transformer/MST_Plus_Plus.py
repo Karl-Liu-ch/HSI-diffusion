@@ -8,7 +8,6 @@ from torch.nn.init import _calculate_fan_in_and_fan_out
 import sys
 sys.path.append('./')
 from options import opt
-from models.transformer.Base import BaseModel
 from torchsummary import summary
 
 def _no_grad_trunc_normal_(tensor, mean, std, a, b):
@@ -141,7 +140,7 @@ class MS_MSA(nn.Module):
         out = out_c + out_p
 
         return out
-
+    
 class Conv_MS_MSA(nn.Module):
     def __init__(
             self,
@@ -361,7 +360,15 @@ class MST_Plus_Plus(nn.Module):
 
 if __name__ == '__main__':
     model = MST_Plus_Plus()
-    summary(model, (3, 128, 128))
+    # summary(model, (3, 128, 128))
+    from calflops import calculate_flops
+    batch_size = 1
+    input_shape = (batch_size, 3, 512, 512)
+    flops, macs, params = calculate_flops(model=model, 
+                                        input_shape=input_shape,
+                                        output_as_string=True,
+                                        output_precision=4)
+    print("MST++ FLOPs:%s   MACs:%s   Params:%s \n" %(flops, macs, params))
     # train_model = BaseModel(opt, model, model_name='MSTPlusPlus')
     # if opt.loadmodel:
     #     try:

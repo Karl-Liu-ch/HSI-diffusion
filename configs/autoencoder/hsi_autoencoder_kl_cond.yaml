@@ -1,4 +1,4 @@
-path: /work3/s212645/Spectral_Reconstruction/checkpoint/ldm/cond/logs
+logdir: /work3/s212645/Spectral_Reconstruction/checkpoint/ldm/cond/logs
 model:
   base_learning_rate: 4.5e-6
   target: ldm.models.autoencoder.CondAutoencoderKL

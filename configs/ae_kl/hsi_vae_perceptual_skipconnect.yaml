@@ -1,0 +1,125 @@
+logdir: /work3/s212645/Spectral_Reconstruction/checkpoint/vae_perceptual_skipconnect/
+model:
+  target: models.vae.vae.PerceptualVAESkipConnect
+  params:
+    epochs: 500
+    image_key: label
+    cond_key: ycrcb
+    # monitor: "val/mrae_avg"
+    monitor: "val/mrae_epoch"
+    embed_dim: 6
+    learning_rate: 2.0e-4
+    lossconfig:
+      target: models.vae.sndiscriminator.SpectralNormalizationWDiscriminator
+      params:
+        disc_start: 10000
+        # kl_weight: 0.00000001
+        kl_weight: 0.000001
+        l1_loss: mrae
+        l1_weight: 10.0
+        sam_weight: 0.1
+        deltaE_weight: 1.0
+        disc_weight: 0.5
+        features_weight: 0.0
+        perceptual_weight: 0.0
+        disc_conditional: False
+        losstype: wasserstein
+        discconfig: 
+          target: models.gan.networks.SN_Densenet161_Discriminator
+          params:
+            input_nums: 31
+
+    ddconfig:
+      double_z: True
+      z_channels: 6
+      encoder:
+        target: models.vae.networks.DualTransformerEncoder
+        params:
+          double_z: True
+          z_channels: 6
+          resolution: 128
+          in_channels: 31
+          out_ch: 31
+          ch: 31
+          ch_mult: [ 1,2,4 ]  # num_down = len(ch_mult)-1
+          num_attn_blocks: [1,1,1]
+          bottle_neck: 1
+          attn_resolutions: [ ]
+          dropout: 0.0
+      decoder:
+        target: models.vae.networks.DualTransformerDecoderCond
+        params:
+          double_z: True
+          z_channels: 6
+          resolution: 128
+          in_channels: 31
+          out_ch: 31
+          ch: 31
+          ch_mult: [ 1,2,4 ]  # num_down = len(ch_mult)-1
+          num_attn_blocks: [1,1,1]
+          bottle_neck: 1
+          attn_resolutions: [ ]
+          dropout: 0.0
+
+    condconfig:
+      target: models.vae.networks.DualTransformerEncoder
+      params:
+        double_z: True
+        z_channels: 6
+        resolution: 128
+        in_channels: 6
+        out_ch: 6
+        ch: 31
+        ch_mult: [ 1,2,4 ]  # num_down = len(ch_mult)-1
+        num_attn_blocks: [1,1,1]
+        bottle_neck: 1
+        attn_resolutions: [ ]
+        dropout: 0.0
+        ckpt_path: /work3/s212645/Spectral_Reconstruction/checkpoint/vae_perceptual_cond/lightning_logs/version_0/checkpoints/best.ckpt
+
+
+data:
+  target: dataset.base.DataModuleFromConfig
+  params:
+    batch_size: 48
+    num_workers: 32
+    train:
+      target: dataset.datasets.TrainDataset
+      params:
+        data_root: /work3/s212645/Spectral_Reconstruction/
+        crop_size: 128
+        valid_ratio: 0.1
+        test_ratio: 0.1
+        arg: True
+        datanames: ['ARAD/']
+    validation:
+      target: dataset.datasets.ValidDataset
+      params:
+        data_root: /work3/s212645/Spectral_Reconstruction/
+        crop_size: 128
+        valid_ratio: 0.1
+        test_ratio: 0.1
+        arg: True
+        datanames: ['ARAD/']
+    test:
+      target: dataset.datasets.TestDataset
+      params:
+        data_root: /work3/s212645/Spectral_Reconstruction/
+        crop_size: 128
+        valid_ratio: 0.1
+        test_ratio: 0.1
+        arg: True
+        datanames: ['ARAD/']
+
+lightning:
+  callbacks:
+    image_logger:
+      target: main.ImageLogger
+      params:
+        batch_frequency: 1000
+        max_images: 8
+        increase_log_steps: True
+
+  trainer:
+    benchmark: True
+    accumulate_grad_batches: 2

@@ -13,19 +13,13 @@ from torch.utils.data import DataLoader
 from torch.autograd import Variable
 from torch import autograd
 import functools
-from Models.GAN.networks import *
-from Models.Transformer.DTN import DTN
+from models.gan.networks import *
+from models.transformer.DTN import DTN
 import numpy as np
-from Models.GAN.Basemodel import BaseModel, criterion_mrae, AverageMeter, SAM, Loss_SAM, Loss_SID, Loss_Fid, Loss_SSIM
-from Models.GAN.Utils import Log_loss, Itself_loss
-from Models.Transformer.MST_Plus_Plus import MST_Plus_Plus
-os.environ["CUDA_DEVICE_ORDER"] = 'PCI_BUS_ID'
-if opt.multigpu:
-    os.environ["CUDA_VISIBLE_DEVICES"] = opt.gpu_id
-    local_rank = int(os.environ["LOCAL_RANK"])
-    torch.cuda.set_device(local_rank)
-else:
-    os.environ["CUDA_VISIBLE_DEVICES"] = opt.gpu_id
+from models.gan.Basemodel import BaseModel, criterion_mrae, AverageMeter, SAM, Loss_SAM, Loss_SID, Loss_Fid, Loss_SSIM
+from models.gan.Utils import Log_loss, Itself_loss
+from models.transformer.MST_Plus_Plus import MST_Plus_Plus
+
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 NONOISE = opt.nonoise
 

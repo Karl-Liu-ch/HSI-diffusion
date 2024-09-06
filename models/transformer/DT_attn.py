@@ -4,21 +4,9 @@ import torch.nn as nn
 import torch
 from torch.nn import functional as F
 from einops import rearrange, repeat
-from einops.layers.torch import Rearrange
-import torch.optim as optim
-import torch.backends.cudnn as cudnn
-from dataset.datasets import TrainDataset, ValidDataset, TestDataset
-from utils import AverageMeter, record_loss, Loss_MRAE, Loss_RMSE, Loss_PSNR, Loss_Fid, \
-    Loss_SAM, Loss_SSIM, reconRGB, Loss_SID, SAM
 from options import opt
 import os
 from utils import *
-from torch.utils.data import DataLoader
-from torch.autograd import Variable
-from torch import autograd
-import functools
-# from models.transformer.MST_Plus_Plus import MSAB, MS_MSA, Conv_MS_MSA
-from models.gan.SpectralNormalization import SNLinear, SNConv2d, SNConvTranspose2d
 from models.transformer.swin_transformer import SwinTransformerBlock
 from models.transformer.swin_transformer_v2 import SwinTransformerBlock as SwinTransformerBlock_v2
 from models.transformer.CSwin import CSWinBlock
@@ -26,28 +14,9 @@ from models.transformer.cat import CATBlock, partition, reverse, to_2tuple
 from models.transformer.cat import Attention as CAT_Attention
 from models.transformer.cat import Mlp as CAT_Mlp
 from models.transformer.swin_transformer_v2 import window_partition, window_reverse
-from models.transformer.agent_swin import SwinTransformerBlock as AgentSwin
-from models.transformer.Base import BaseModel
-from dataset.datasets import TestFullDataset
 from torchsummary import summary
-os.environ["CUDA_DEVICE_ORDER"] = 'PCI_BUS_ID'
-if opt.multigpu:
-    os.environ["CUDA_VISIBLE_DEVICES"] = opt.gpu_id
-    local_rank = int(os.environ["LOCAL_RANK"])
-    torch.cuda.set_device(local_rank)
-else:
-    os.environ["CUDA_VISIBLE_DEVICES"] = opt.gpu_id
-device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
-# loss function
-criterion_mrae = Loss_MRAE()
-criterion_rmse = Loss_RMSE()
-criterion_psnr = Loss_PSNR()
-criterion_psnrrgb = Loss_PSNR()
-criterion_sam = Loss_SAM()
-criterion_sid = Loss_SID()
-criterion_fid = Loss_Fid().to(device)
-criterion_ssim = Loss_SSIM().to(device)
+device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
 def change_resolution(module, new_resolution):
     new_resolution = tuple(new_resolution)
@@ -154,7 +123,7 @@ class CATAttnBlock(nn.Module):
         self.attn_cross = CAT_Attention(
             dim= self.patch_size ** 2, patch_size=to_2tuple(self.patch_size), 
             num_heads=1, qkv_bias=qkv_bias, qk_scale=qk_scale, attn_drop=attn_drop, proj_drop=drop, rpe=False)
-        self.proj = nn.Linear(dim*2, dim, bias=False)
+        self.proj = nn.Linear(dim*2, dim)
 
     def forward(self, x):
         # H, W = self.input_resolution
@@ -454,10 +423,47 @@ def cross_reverse(x, patch_size, B, H, W, C):
     return x
 
 def attn_reverse(x, patch_size, B, H, W, C):
-    x = x.view(-1, patch_size, patch_size, C)
-    x = reverse(x, patch_size, H, W)  # B H' W' C
+    x = x.view(-1, patch_size, patch_size, C) # [B*nP, patch*patch, C] -> [B*nP, patch, patch, C]
+    x = reverse(x, patch_size, H, W)  # B H' W' C patches -> full image
     x = rearrange(x, 'b h w c -> b c h w')
     return x
+
+class DWConv(nn.Module):
+    def __init__(self, dim):
+        super().__init__()
+        self.dwconv = nn.Sequential(
+            nn.Conv2d(dim, dim, kernel_size=3, stride=1, padding=1, groups=dim, bias=False),
+            # nn.BatchNorm2d(dim),
+            nn.GroupNorm(31, dim),
+            nn.GELU(),
+            nn.Conv2d(dim, dim, kernel_size=3, stride=1, padding=1, groups=dim, bias=False),
+        )
+    def forward(self, x):
+        return self.dwconv(x)
+    
+class ChannelAttn(nn.Module):
+    def __init__(self, dim):
+        super().__init__()
+        self.channel_interaction = nn.Sequential(
+            nn.Conv2d(dim * 2, dim // 8, kernel_size=1, bias=False),
+            # nn.BatchNorm2d(dim // 8),
+            nn.GELU(),
+            nn.Conv2d(dim // 8, dim, kernel_size=1, bias=False),
+        )
+    def forward(self, x):
+        return self.channel_interaction(x)
+    
+class SpatialAttn(nn.Module):
+    def __init__(self, dim):
+        super().__init__()
+        self.spatial_interaction = nn.Sequential(
+            nn.Conv2d(dim, dim // 16, kernel_size=1, bias=False),
+            # nn.BatchNorm2d(dim // 16),
+            nn.GELU(),
+            nn.Conv2d(dim // 16, 1, kernel_size=1, bias=False)
+        )
+    def forward(self, x):
+        return self.spatial_interaction(x)
 
 class Adaptive_CATB(nn.Module):
     def __init__(self, dim=31, 
@@ -479,29 +485,16 @@ class Adaptive_CATB(nn.Module):
             self.patch_size = min(self.input_resolution)
 
         self.attn = Window_Attention(
-            dim=dim if attn_type == "ipsa" else self.patch_size ** 2, patch_size=to_2tuple(self.patch_size), 
-            num_heads=num_heads, qkv_bias=True, qk_scale=None, attn_drop=0., proj_drop=0., rpe=True if attn_type == 'ipsa' else False)
+            dim=self.patch_size ** 2 if attn_type == "cpsa" else dim, patch_size=to_2tuple(self.patch_size), 
+            num_heads=1 if attn_type == 'cpsa' else num_heads, qkv_bias=True, qk_scale=None, attn_drop=0., proj_drop=0., rpe=True if attn_type == 'ipsa' else False)
 
-        self.dwconv = nn.Sequential(
-            nn.Conv2d(dim, dim, kernel_size=3, stride=1, padding=1,groups=dim),
-            nn.BatchNorm2d(dim),
-            nn.GELU()
-        )
+        self.dwconv = DWConv(dim)
         self.norm = nn.LayerNorm(dim)
         self.avgpool = nn.AdaptiveAvgPool2d(1)
         self.maxpool = nn.AdaptiveMaxPool2d(1)
-        self.proj = nn.Conv2d(dim, dim, kernel_size=1, bias=False)
-        self.channel_interaction = nn.Sequential(
-            nn.Conv2d(dim * 2, dim // 8, kernel_size=1),
-            nn.GELU(),
-            nn.Conv2d(dim // 8, dim, kernel_size=1),
-        )
-        self.spatial_interaction = nn.Sequential(
-            nn.Conv2d(dim, dim // 16, kernel_size=1),
-            nn.BatchNorm2d(dim // 16),
-            nn.GELU(),
-            nn.Conv2d(dim // 16, 1, kernel_size=1)
-        )
+        self.proj = nn.Conv2d(dim, dim, kernel_size=1)
+        self.channel_interaction = ChannelAttn(dim)
+        self.spatial_interaction = SpatialAttn(dim)
         self.norm2 = nn.LayerNorm(dim)
         if use_gdfn:
             self.ffn = GDFN(dim=dim, ffn_expansion_factor=4)
@@ -526,7 +519,13 @@ class Adaptive_CATB(nn.Module):
             attn, v = self.attn(patches)
             attn = cross_reverse(attn, self.patch_size, B, H, W, C)
             v = cross_reverse(v, self.patch_size, B, H, W, C)
-        else :
+        elif self.attn_type == "dpsa":
+            patches = patches.view(B, (H // self.patch_size) * (W // self.patch_size), self.patch_size ** 2, C).contiguous() # [b, nP * nP, patch*patch, c]
+            patches = rearrange(patches, 'b n p c -> (b p) n c').contiguous()
+            attn, v = self.attn(patches)
+            attn = rearrange(attn, '(b p) n c -> (b n) p c', b = B).contiguous()
+            v = rearrange(v, '(b p) n c -> (b n) p c', b = B).contiguous()
+        else:
             raise NotImplementedError(f"Unkown Attention type: {self.attn_type}") 
         # reverse opration of partition
         attn = attn_reverse(attn, self.patch_size, B, H, W, C)
@@ -535,12 +534,105 @@ class Adaptive_CATB(nn.Module):
         convx = self.dwconv(v)
         pool = torch.concat([self.avgpool(convx), self.maxpool(convx)], dim = 1)
         channelinter = torch.sigmoid(self.channel_interaction(pool))
-        spatialinter = torch.sigmoid(self.spatial_interaction(convx))
+        spatialinter = torch.sigmoid(self.spatial_interaction(attn))
         channelx = attn * channelinter
         spatialx = convx * spatialinter
         out = self.proj(channelx + spatialx)
         out = x_in + out
         ff = self.norm2(rearrange(out, 'b c h w -> b (h w) c'))
+        ff = self.ffn(ff, H, W)
+        out = rearrange(ff, 'b (h w) c -> b c h w', h = H, w = W) + out
+        return out
+    
+class AdaptiveCAT(nn.Module):
+    def __init__(self, dim=31, 
+                 input_resolution=(128,128), 
+                 num_heads=1, 
+                 window_size=8, 
+                 shift_size=0,
+                 use_cswin = False, 
+                 use_gdfn = False, 
+                 split_size = 1, 
+                 attn_type = "ipsa"):
+        super().__init__()
+        self.dim = dim
+        self.input_resolution = input_resolution
+        self.num_heads = num_heads
+        self.patch_size = window_size
+        self.attn_type = attn_type
+        if min(self.input_resolution) <= self.patch_size:
+            self.patch_size = min(self.input_resolution)
+
+        self.attn1 = Window_Attention(
+            dim=dim, patch_size=to_2tuple(self.patch_size), 
+            num_heads=num_heads, qkv_bias=True, qk_scale=None, attn_drop=0., proj_drop=0., rpe=True)
+
+        self.attn2 = Window_Attention(
+            dim=self.patch_size ** 2, patch_size=to_2tuple(self.patch_size), 
+            num_heads=1, qkv_bias=True, qk_scale=None, attn_drop=0., proj_drop=0., rpe=False)
+
+        self.attn3 = Window_Attention(
+            dim=dim, patch_size=to_2tuple(self.patch_size), 
+            num_heads=num_heads, qkv_bias=True, qk_scale=None, attn_drop=0., proj_drop=0., rpe=True)
+
+        self.dwconv = DWConv(dim)
+        self.norm1 = nn.LayerNorm(dim)
+        self.norm2 = nn.LayerNorm(dim)
+        self.norm3 = nn.LayerNorm(dim)
+        self.avgpool = nn.AdaptiveAvgPool2d(1)
+        self.maxpool = nn.AdaptiveMaxPool2d(1)
+        self.proj = nn.Conv2d(dim, dim, kernel_size=1)
+        self.channel_interaction = ChannelAttn(dim)
+        self.spatial_interaction = SpatialAttn(dim)
+        self.norm4 = nn.LayerNorm(dim)
+        if use_gdfn:
+            self.ffn = GDFN(dim=dim, ffn_expansion_factor=4)
+        else:
+            self.ffn = SGFN(in_features=dim, hidden_features=dim*2)
+    
+    def forward(self, x_in):
+        B, C, H, W = x_in.shape
+        x = self.norm1(rearrange(x_in, 'b c h w -> b (h w) c'))
+        x = rearrange(x, 'b (h w) c -> b c h w', h = H, w = W)
+        convx = x.clone()
+
+        x = x.permute(0, 2, 3, 1)
+        # partition
+        patches = partition(x, self.patch_size)  # nP*B, patch_size, patch_size, C
+        patches = patches.view(-1, self.patch_size * self.patch_size, C)  # nP*B, patch_size*patch_size, C
+        attn, v = self.attn1(patches)  # nP*B, patch_size*patch_size, C
+        patches = attn + patches
+        patches = attn_reverse(patches, self.patch_size, B, H, W, C)
+        patches = self.norm2(rearrange(patches, 'b c h w -> b (h w) c'))
+        patches = rearrange(patches, 'b (h w) c -> b h w c', h = H, w = W)
+
+        patches = partition(x, self.patch_size)  # nP*B, patch_size, patch_size, C
+        patches = patches.view(-1, self.patch_size * self.patch_size, C)  # nP*B, patch_size*patch_size, C
+        patches = patches.view(B, (H // self.patch_size) * (W // self.patch_size), self.patch_size ** 2, C).permute(0, 3, 1, 2).contiguous()
+        patches = patches.view(-1, (H // self.patch_size) * (W // self.patch_size), self.patch_size ** 2) # nP*B*C, nP*nP, patch_size*patch_size
+        attn, v = self.attn2(patches)
+        patches = attn + patches
+        patches = cross_reverse(patches, self.patch_size, B, H, W, C)
+        patches = attn_reverse(patches, self.patch_size, B, H, W, C)
+        patches = self.norm3(rearrange(patches, 'b c h w -> b (h w) c'))
+        patches = rearrange(patches, 'b (h w) c -> b h w c', h = H, w = W)
+
+        patches = partition(x, self.patch_size)  # nP*B, patch_size, patch_size, C
+        patches = patches.view(-1, self.patch_size * self.patch_size, C)  # nP*B, patch_size*patch_size, C
+        attn, v = self.attn3(patches)  # nP*B, patch_size*patch_size, C
+        
+        # reverse opration of partition
+        attn = attn_reverse(attn, self.patch_size, B, H, W, C)
+        
+        convx = self.dwconv(convx)
+        pool = torch.concat([self.avgpool(convx), self.maxpool(convx)], dim = 1)
+        channelinter = torch.sigmoid(self.channel_interaction(pool))
+        spatialinter = torch.sigmoid(self.spatial_interaction(attn))
+        channelx = attn * channelinter
+        spatialx = convx * spatialinter
+        out = self.proj(channelx + spatialx)
+        out = x_in + out
+        ff = self.norm4(rearrange(out, 'b c h w -> b (h w) c'))
         ff = self.ffn(ff, H, W)
         out = rearrange(ff, 'b (h w) c -> b c h w', h = H, w = W) + out
         return out
@@ -558,6 +650,26 @@ class Adaptive_CATLayer(nn.Module):
         self.pre_ipsa = Adaptive_CATB(dim, input_resolution, num_heads, window_size, shift_size, use_cswin, use_gdfn, split_size, attn_type='ipsa')
         self.cross_cpsa = Adaptive_CATB(dim, input_resolution, num_heads, window_size, shift_size, use_cswin, use_gdfn, split_size, attn_type='cpsa')
         self.post_ipsa = Adaptive_CATB(dim, input_resolution, num_heads, window_size, shift_size, use_cswin, use_gdfn, split_size, attn_type='ipsa')
+    
+    def forward(self, x):
+        x = self.pre_ipsa(x)
+        x = self.cross_cpsa(x)
+        x = self.post_ipsa(x)
+        return x
+
+class Adaptive_CATLayer_D(nn.Module):
+    def __init__(self, dim=31, 
+                 input_resolution=(128,128), 
+                 num_heads=1, 
+                 window_size=8, 
+                 shift_size=0,
+                 use_cswin = False, 
+                 use_gdfn = False, 
+                 split_size = 1):
+        super().__init__()
+        self.pre_ipsa = Adaptive_CATB(dim, input_resolution, num_heads, window_size, shift_size, use_cswin, use_gdfn, split_size, attn_type='ipsa')
+        self.cross_cpsa = Adaptive_CATB(dim, input_resolution, num_heads, window_size, shift_size, use_cswin, use_gdfn, split_size, attn_type='cpsa')
+        self.post_ipsa = Adaptive_CATB(dim, input_resolution, num_heads, window_size, shift_size, use_cswin, use_gdfn, split_size, attn_type='dpsa')
     
     def forward(self, x):
         x = self.pre_ipsa(x)
@@ -584,33 +696,13 @@ class Adaptive_SWTB(nn.Module):
         #                 num_heads=num_heads, 
         #                 split_size=split_size)
         
-        self.dwconv = nn.Sequential(
-            nn.Conv2d(dim, dim, kernel_size=3, stride=1, padding=1,groups=dim),
-            nn.BatchNorm2d(dim),
-            nn.GELU()
-        )
+        self.dwconv = DWConv(dim)
         self.norm = nn.LayerNorm(dim)
         self.avgpool = nn.AdaptiveAvgPool2d(1)
         self.maxpool = nn.AdaptiveMaxPool2d(1)
-        self.proj = nn.Conv2d(dim, dim, kernel_size=1, bias=False)
-        self.channel_interaction = nn.Sequential(
-            nn.Conv2d(dim * 2, dim // 8, kernel_size=1),
-            nn.GELU(),
-            nn.Conv2d(dim // 8, dim, kernel_size=1),
-        )
-        # self.spatial_interaction = nn.Sequential(
-        #     nn.Conv2d(dim, dim // 16, kernel_size=1),
-        #     nn.BatchNorm2d(dim // 16),
-        #     nn.GELU(),
-        #     nn.Conv2d(dim // 16, 1, kernel_size=1)
-        # )
-        self.spatial_interaction = nn.Sequential(
-            nn.Conv2d(dim, dim // 16, kernel_size=1),
-            nn.Conv2d(dim // 16, dim // 16, 3, 1, 1, groups=dim // 16),
-            nn.BatchNorm2d(dim // 16),
-            nn.GELU(),
-            nn.Conv2d(dim // 16, 1, 3, 1, 1, groups=1)
-        )
+        self.proj = nn.Conv2d(dim, dim, kernel_size=1)
+        self.channel_interaction = ChannelAttn(dim)
+        self.spatial_interaction = SpatialAttn(dim)
         self.norm2 = nn.LayerNorm(dim)
         if use_gdfn:
             self.ffn = GDFN(dim=dim, ffn_expansion_factor=4)
@@ -626,7 +718,7 @@ class Adaptive_SWTB(nn.Module):
         convx = self.dwconv(v)
         pool = torch.concat([self.avgpool(convx), self.maxpool(convx)], dim = 1)
         channelinter = torch.sigmoid(self.channel_interaction(pool))
-        spatialinter = torch.sigmoid(self.spatial_interaction(convx))
+        spatialinter = torch.sigmoid(self.spatial_interaction(attnx))
         channelx = attnx * channelinter
         spatialx = convx * spatialinter
         out = self.proj(channelx + spatialx)
@@ -649,7 +741,7 @@ class Conv_MS_MSA(nn.Module):
         self.qkv = nn.Conv2d(dim, dim*3, kernel_size=1, bias=False)
         self.qkv_dwconv = nn.Conv2d(dim*3, dim*3, kernel_size=3, stride=1, padding=1, groups=dim*3, bias=False)
         self.rescale = nn.Parameter(torch.ones(heads, 1, 1))
-        self.proj = nn.Conv2d(dim_head * heads, dim, 3, 1, 1, bias=False)
+        self.proj = nn.Conv2d(dim_head * heads, dim, 3, 1, 1)
         # self.pos_emb = nn.Sequential(
         #     nn.Conv2d(dim, dim, 3, 1, 1, bias=False, groups=dim),
         #     nn.GELU(),
@@ -761,33 +853,13 @@ class Adaptive_MSAB(nn.Module):
         else:
             self.model = MS_MSA(dim=dim, dim_head=dim_head, heads=heads)
         
-        self.dwconv = nn.Sequential(
-            nn.Conv2d(dim, dim, kernel_size=3, stride=1, padding=1, groups=dim),
-            nn.BatchNorm2d(dim),
-            nn.GELU()
-        )
+        self.dwconv = DWConv(dim)
         self.norm = nn.LayerNorm(dim)
         self.avgpool = nn.AdaptiveAvgPool2d(1)
         self.maxpool = nn.AdaptiveMaxPool2d(1)
-        self.proj = nn.Conv2d(dim, dim, kernel_size=1, bias=False)
-        self.channel_interaction = nn.Sequential(
-            nn.Conv2d(dim * 2, dim // 8, kernel_size=1),
-            nn.GELU(),
-            nn.Conv2d(dim // 8, dim, kernel_size=1),
-        )
-        # self.spatial_interaction = nn.Sequential(
-        #     nn.Conv2d(dim, dim // 16, kernel_size=1),
-        #     nn.BatchNorm2d(dim // 16),
-        #     nn.GELU(),
-        #     nn.Conv2d(dim // 16, 1, kernel_size=1)
-        # )
-        self.spatial_interaction = nn.Sequential(
-            nn.Conv2d(dim, dim // 16, kernel_size=1),
-            nn.Conv2d(dim // 16, dim // 16, 3, 1, 1, groups=dim // 16),
-            nn.BatchNorm2d(dim // 16),
-            nn.GELU(),
-            nn.Conv2d(dim // 16, 1, 3, 1, 1, groups=1)
-        )
+        self.proj = nn.Conv2d(dim, dim, kernel_size=1)
+        self.channel_interaction = ChannelAttn(dim)
+        self.spatial_interaction = SpatialAttn(dim)
         self.norm2 = nn.LayerNorm(dim)
         if use_gdfn:
             self.ffn = GDFN(dim=dim, ffn_expansion_factor=4)
@@ -816,7 +888,7 @@ class Adaptive_MSAB(nn.Module):
         attnx, v = self.model(attnx)
         attnx = attnx.permute(0, 3, 1, 2)
         convx = self.dwconv(v)
-        pool = torch.concat([self.avgpool(convx), self.maxpool(convx)], dim = 1)
+        pool = torch.concat([self.avgpool(attnx), self.maxpool(attnx)], dim = 1)
 
         channelinter = torch.sigmoid(self.channel_interaction(pool))
         spatialinter = torch.sigmoid(self.spatial_interaction(convx))
@@ -831,7 +903,7 @@ class Adaptive_MSAB(nn.Module):
         return out
 
 class DTNBlock(nn.Module):
-    def __init__(self, dim, dim_head, input_resolution, num_heads, window_size, num_block, num_msab = 2, use_conv = False, use_cswin = False, use_gdfn = False, split_size = 4):
+    def __init__(self, dim, dim_head, num_heads, input_resolution = [128, 128], window_size = 8, num_block = 1, num_msab = 1, use_conv = False, use_cswin = False, use_gdfn = False, split_size = 4):
         super().__init__()
         self.dim = dim
         self.dim_head = dim_head
@@ -843,46 +915,42 @@ class DTNBlock(nn.Module):
             layer += [Adaptive_MSAB(dim, num_blocks=num_msab, dim_head=dim_head, heads=dim // dim_head, use_conv=use_conv, use_gdfn= use_gdfn)]
             # layer += [Adaptive_SWTB(dim, self.input_resolution, num_heads=dim // dim_head, window_size=window_size, use_cswin = use_cswin, use_gdfn= use_gdfn, split_size=split_size)]
             layer += [Adaptive_CATLayer(dim, self.input_resolution, num_heads=dim // dim_head, window_size=window_size, use_cswin = use_cswin, use_gdfn= use_gdfn, split_size=split_size)]
+            # layer += [AdaptiveCAT(dim, self.input_resolution, num_heads=dim // dim_head, window_size=window_size, use_cswin = use_cswin, use_gdfn= use_gdfn, split_size=split_size)]
+            # layer += [Adaptive_CATLayer_D(dim, self.input_resolution, num_heads=dim // dim_head, window_size=window_size, use_cswin = use_cswin, use_gdfn= use_gdfn, split_size=split_size)]
         self.model = nn.Sequential(*layer)
         
     def forward(self, x):
         return self.model(x)
 
 class DownSample(nn.Module):
-    def __init__(self, inchannel, outchannel):
+    def __init__(self, inchannel, outchannel, pixel_shuffle = True):
         super().__init__()
-        # self.model = nn.Sequential(
-        #     nn.Conv2d(inchannel, outchannel, kernel_size=4, stride=2, padding=1, bias=False),
-        #     nn.BatchNorm2d(outchannel), 
-        #     nn.GELU()
-        # )
-        # self.model = nn.Sequential(
-        #     nn.Conv2d(inchannel, outchannel, kernel_size=4, stride=2, padding=1, bias=False)
-        # )
-        self.model = nn.Sequential(
-            nn.Conv2d(inchannel, inchannel, kernel_size=3, stride=1, padding=1, bias=False), 
-            nn.PixelUnshuffle(2),
-            nn.Conv2d(inchannel * 4, outchannel, kernel_size=3, stride=1, padding=1, bias=False), 
-        )
+        if pixel_shuffle: 
+            self.model = nn.Sequential(
+                nn.Conv2d(inchannel, inchannel, kernel_size=3, stride=1, padding=1), 
+                nn.PixelUnshuffle(2),
+                nn.Conv2d(inchannel * 4, outchannel, kernel_size=1, stride=1, padding=0, bias=False), 
+            )
+        else:
+            self.model = nn.Sequential(
+                nn.Conv2d(inchannel, outchannel, kernel_size=4, stride=2, padding=1)
+            )
         
     def forward(self, x):
         return self.model(x)
     
 class UpSample(nn.Module):
-    def __init__(self, inchannel, outchannel):
+    def __init__(self, inchannel, outchannel, pixel_shuffle = True):
         super().__init__()
-        # self.model = nn.Sequential(
-        #     nn.ConvTranspose2d(inchannel, outchannel, kernel_size=4, stride=2, padding=1),
-        #     nn.BatchNorm2d(outchannel), 
-        #     nn.GELU()
-        # )
-        # self.model = nn.Sequential(
-        #     nn.ConvTranspose2d(inchannel, outchannel, stride=2, kernel_size=2, padding=0, output_padding=0),
-        # )
-        self.model = nn.Sequential(
-            nn.Conv2d(inchannel, outchannel * 4, kernel_size=3, stride=1, padding=1, bias=False), 
-            nn.PixelShuffle(2),
-        )
+        if pixel_shuffle:
+            self.model = nn.Sequential(
+                nn.Conv2d(inchannel, outchannel * 4, kernel_size=3, stride=1, padding=1), 
+                nn.PixelShuffle(2),
+            )
+        else:
+            self.model = nn.Sequential(
+                nn.ConvTranspose2d(inchannel, outchannel, stride=2, kernel_size=2, padding=0, output_padding=0),
+            )
         
     def forward(self, x):
         return self.model(x)
@@ -902,13 +970,14 @@ class DTN(nn.Module):
                  use_conv = False, 
                  use_cswin = False, 
                  use_gdfn = False, 
+                 pixel_shuffle = True, 
                  split_size = 1):
         super().__init__()
         self.min_window = window_size * 2 ** len(n_block)
         img_size[0] = (self.min_window - img_size[0] % self.min_window) % self.min_window + img_size[0]
         img_size[1] = (self.min_window - img_size[1] % self.min_window) % self.min_window + img_size[1]
         dim = out_dim
-        self.embedding = nn.Conv2d(in_dim, dim, 3, 1, 1, bias=False)
+        self.embedding = nn.Conv2d(in_dim, dim, 3, 1, 1)
         self.stage = len(n_block)-1
         # Encoder
         self.encoder_layers = nn.ModuleList([])
@@ -926,7 +995,7 @@ class DTN(nn.Module):
                          use_cswin = use_cswin,
                          use_gdfn = use_gdfn, 
                          split_size = split_size),
-                DownSample(dim_stage, dim_stage * 2),
+                DownSample(dim_stage, dim_stage * 2, pixel_shuffle),
             ]))
             img_size[0] = img_size[0] // 2
             img_size[1] = img_size[1] // 2
@@ -953,7 +1022,7 @@ class DTN(nn.Module):
             img_size[1] = img_size[1] * 2
             split_size = min(split_size // 2, img_size[0])
             self.decoder_layers.append(nn.ModuleList([
-                UpSample(dim_stage, dim_stage // 2), 
+                UpSample(dim_stage, dim_stage // 2, pixel_shuffle), 
                 nn.Conv2d(dim_stage, dim_stage // 2, 1, 1, bias=False),
                 DTNBlock(dim = dim_stage // 2, 
                          dim_head = dim, 
@@ -969,7 +1038,7 @@ class DTN(nn.Module):
             ]))
             dim_stage //= 2
         
-        self.mapping = nn.Conv2d(dim, out_dim, 3, 1, 1, bias=False)
+        self.mapping = nn.Conv2d(dim, out_dim, 3, 1, 1)
         self.apply(self._init_weights)
     
     def _init_weights(self, m):
@@ -980,6 +1049,8 @@ class DTN(nn.Module):
 
     def forward(self, x):
         b, c, h_inp, w_inp = x.shape
+        if b == 1:
+            self.apply(freeze_norm_stats)
         pad_h = (self.min_window - h_inp % self.min_window) % self.min_window
         pad_w = (self.min_window - w_inp % self.min_window) % self.min_window
         x = F.pad(x, [0, pad_w, 0, pad_h], mode='reflect')
@@ -1059,7 +1130,7 @@ def init_weights_uniform(module):
         print(f'init {module}')
 
 if __name__ == '__main__':
-    model = DTN(in_dim=3, 
+    model = DTN(in_dim=6, 
                     out_dim=31,
                     img_size=[128, 128], 
                     window_size=8, 
@@ -1071,10 +1142,12 @@ if __name__ == '__main__':
                     use_gdfn=True).to(device)
     # model.apply(init_weights_uniform)
     # model = DTN_multi_stage(in_channels=3, out_channels=31, n_feat=31, img_size=[128, 128], window=32).to(device)
-    input = torch.rand([1, 3, 128, 128]).to(device)
+    input = torch.rand([1, 6, 128, 128]).to(device)
+    # model.apply(freeze_norm_stats)
     output = model(input.float())
     print(output.shape)
-    summary(model, (3, 256, 256))
+    summary(model, (6, 128, 128))
+    summary(model, (6, 256, 256))
     # spec = TrainDTN(opt, model, model_name='DTN')
     # if opt.loadmodel:
     #     try:

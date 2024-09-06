@@ -15,11 +15,12 @@ from torch.utils.data import Dataset
 import torch
 from torch import nn, einsum
 import torch.nn.functional as F
-from Models.Diffusion_Model.attend import Attend
+from models.diffusion_model.attend import Attend
 from torch.utils.data import DataLoader
 from torch.autograd import Variable
 import numpy as np
 import os
+from models.transformer.DT_attn import DTNBlock
 os.environ["KMP_DUPLICATE_LIB_OK"]="TRUE"
 device = 'cuda' if torch.cuda.is_available() else 'cpu'
 BATCHSIZE = 64
@@ -337,29 +338,34 @@ class Unet(nn.Module):
         for ind, ((dim_in, dim_out), layer_full_attn, layer_attn_heads, layer_attn_dim_head) in enumerate(zip(in_out, full_attn, attn_heads, attn_dim_head)):
             is_last = ind >= (num_resolutions - 1)
 
-            attn_klass = FullAttention if layer_full_attn else LinearAttention
+            # attn_klass = FullAttention if layer_full_attn else LinearAttention
+            attn_klass = DTNBlock
 
             self.downs.append(nn.ModuleList([
                 block_klass(dim_in, dim_in, time_emb_dim = time_dim),
                 block_klass(dim_in, dim_in, time_emb_dim = time_dim),
-                attn_klass(dim_in, dim_head = layer_attn_dim_head, heads = layer_attn_heads),
+                # attn_klass(dim_in, dim_head = layer_attn_dim_head, heads = layer_attn_heads),
+                attn_klass(dim=dim_in, dim_head = layer_attn_dim_head, num_heads = layer_attn_heads),
                 Downsample(dim_in, dim_out) if not is_last else nn.Conv2d(dim_in, dim_out, 3, padding = 1)
             ]))
 
         mid_dim = dims[-1]
         self.mid_block1 = block_klass(mid_dim, mid_dim, time_emb_dim = time_dim)
-        self.mid_attn = FullAttention(mid_dim, heads = attn_heads[-1], dim_head = attn_dim_head[-1])
+        # self.mid_attn = FullAttention(mid_dim, heads = attn_heads[-1], dim_head = attn_dim_head[-1])
+        self.mid_attn = DTNBlock(dim=mid_dim, num_heads = attn_heads[-1], dim_head = attn_dim_head[-1])
         self.mid_block2 = block_klass(mid_dim, mid_dim, time_emb_dim = time_dim)
 
         for ind, ((dim_in, dim_out), layer_full_attn, layer_attn_heads, layer_attn_dim_head) in enumerate(zip(*map(reversed, (in_out, full_attn, attn_heads, attn_dim_head)))):
             is_last = ind == (len(in_out) - 1)
 
-            attn_klass = FullAttention if layer_full_attn else LinearAttention
+            # attn_klass = FullAttention if layer_full_attn else LinearAttention
+            attn_klass = DTNBlock
 
             self.ups.append(nn.ModuleList([
                 block_klass(dim_out + dim_in, dim_out, time_emb_dim = time_dim),
                 block_klass(dim_out + dim_in, dim_out, time_emb_dim = time_dim),
-                attn_klass(dim_out, dim_head = layer_attn_dim_head, heads = layer_attn_heads),
+                # attn_klass(dim_out, dim_head = layer_attn_dim_head, heads = layer_attn_heads),
+                attn_klass(dim=dim_out, dim_head = layer_attn_dim_head, num_heads = layer_attn_heads),
                 Upsample(dim_out, dim_in) if not is_last else  nn.Conv2d(dim_out, dim_in, 3, padding = 1)
             ]))
 

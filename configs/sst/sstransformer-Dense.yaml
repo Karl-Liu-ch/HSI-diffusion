@@ -1,0 +1,21 @@
+target: models.transformer.basemodel.TrainModel
+params:
+  ckpath: /work3/s212645/Spectral_Reconstruction/checkpoint/SSTransformer-D/
+  image_key: 'label'
+  cond_key: 'cond'
+  # cond_key: 'ycrcb'
+  valid_ratio: 0.1
+  test_ratio: 0.1
+  progressive_train: False
+  datanames: ['ARAD/']
+  padding_tpye: reflect
+  padding_size: 128
+  genconfig:
+    target: models.transformer.SST_Dense.SSTransformer_D
+    params:
+      in_dim: 3
+      out_dim: 31
+      expand_dim: 16
+      input_resolution: [128, 128]
+      n_blocks: 4
+      patch_size: 8

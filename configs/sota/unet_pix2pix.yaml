@@ -1,0 +1,34 @@
+target: models.gan.gan.Gan
+params:
+  ckpath: /work3/s212645/Spectral_Reconstruction/checkpoint/gan/pix2pix/
+  valid_ratio: 0.1
+  test_ratio: 0.1
+  cond_key: 'cond'
+  progressive_train: False
+  patience: 50
+  genconfig:
+    target: models.gan.networks.UnetGenerator
+    params:
+      input_nc: 3
+      output_nc: 31
+
+  disconfig:
+    target: models.gan.networks.NLayerDiscriminator
+    params:
+      input_nc: 34
+      input_nums: 34
+
+  lossconfig:
+    target: models.losses.gan_loss.Loss
+    params:
+      l1_weight: 10.0
+      sam_weight: 0.0
+      features_weight: 0.0
+      disc_weight: 0.0
+      deltaE_weight: 0.0
+      perceptual_weight: 0.0
+      threshold: 0
+      losstype: lsgan
+      use_feature: False
+      progressive_train: False
+  

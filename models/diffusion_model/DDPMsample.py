@@ -27,13 +27,6 @@ import torch.nn.functional as F
 from utils import AverageMeter, record_loss, Loss_MRAE, Loss_RMSE, Loss_PSNR, Loss_Fid, Loss_SAM, Loss_SSIM, reconRGB, Loss_SID, SAM, SaveSpectral
 import scipy.io
 
-os.environ["CUDA_DEVICE_ORDER"] = 'PCI_BUS_ID'
-if opt.multigpu:
-    os.environ["CUDA_VISIBLE_DEVICES"] = opt.gpu_id
-    local_rank = int(os.environ["LOCAL_RANK"])
-    torch.cuda.set_device(local_rank)
-else:
-    os.environ["CUDA_VISIBLE_DEVICES"] = opt.gpu_id
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
 path = '/work3/s212645/Spectral_Reconstruction/checkpoint/DDPM/'
