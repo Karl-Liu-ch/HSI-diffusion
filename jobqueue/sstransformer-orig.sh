@@ -36,5 +36,6 @@ source ./miniconda3/bin/activate
 conda activate pytorch
 cd /zhome/02/b/164706/Master_Courses/thesis/HSI-diffusion/
 export PYTHONUNBUFFERED=1
-# python -u train.py -c configs/sst/sstransformer_ori.yaml --gpu_id 0 --batch_size 32 --learning_rate 4e-4 --mode train --end_epoch 5 --stride 8 -r
-python -u train.py -c configs/sst/sstransformer_ori.yaml --gpu_id 0 --batch_size 32 --learning_rate 4e-4 --mode tuning --end_epoch 5 --stride 8 -r
+python -u train.py -c configs/sst/sstransformer_ori.yaml --gpu_id 0 --batch_size 32 --learning_rate 4e-4 --mode train --end_epoch 5 -r
+#  --end_epoch 5 --stride 8 
+# python -u train.py -c configs/sst/sstransformer_ori.yaml --gpu_id 0 --batch_size 32 --learning_rate 4e-4 --mode tuning --end_epoch 5 --stride 8 -r

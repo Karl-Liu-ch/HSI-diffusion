@@ -62,8 +62,8 @@ cave_ycrcb = np.array(cave_ycrcb).reshape(-1,3)
 # plt.savefig(f'results/cave-hsi-histogram.png')
 # plt.close()
 
-# for i in tqdm(range(31)):
-i = 25
+# for i in tqdm(range(2)):
+i = 30
 df = {}
 band = i * 10 + 400
 band = str(band)
@@ -74,7 +74,7 @@ plt.title(f'{band}-hs')
 plt.savefig(f'results/{band}-hs.png')
 plt.close()
 
-# for i in tqdm(range(3)):
+# for i in tqdm(range(31)):
 # i = 2
 # df = {}
 # df['ARAD'] = arad_ycrcb[:,i]

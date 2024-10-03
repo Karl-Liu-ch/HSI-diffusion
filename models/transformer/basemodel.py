@@ -59,7 +59,7 @@ class TrainModel():
                  padding_tpye = None, 
                  padding_size:int = 1,
                  val_in_epoch = False,
-                 num_warmup = 1,
+                 num_warmup = 0,
                  finetune = False,
                  **kargs):
         super().__init__()
@@ -94,8 +94,7 @@ class TrainModel():
         self.datanames = datanames
         self.epoch = 0
         self.end_epoch = end_epoch
-        per_epoch_iteration = 1000
-        self.total_iteration = per_epoch_iteration*end_epoch
+        self.total_iteration = total_iter
         self.iteration = 0
         self.best_mrae = 1000
         self.data_root = data_root
@@ -166,9 +165,10 @@ class TrainModel():
         self.total_iteration = self.end_epoch * (iter_per_epoch // self.batch_size + 1)
         if self.val_in_epoch:
             # self.schedulerG = torch.optim.lr_scheduler.CosineAnnealingLR(self.optimG, self.total_iter, eta_min=1e-6)
+            self.total_iteration = self.total_iter
             self.schedulerG = CosineLRScheduler(self.optimG, t_initial=self.total_iter,
                                             cycle_mul = 1,cycle_decay = 1,lr_min=1e-6,
-                                            warmup_lr_init=4e-4,warmup_t=iter_per_epoch // 10,
+                                            warmup_lr_init=4e-4,warmup_t=0,
                                             cycle_limit=1,t_in_epochs=False)
         else:
             # self.schedulerG = torch.optim.lr_scheduler.CosineAnnealingLR(self.optimG, self.total_iteration, eta_min=1e-6)
@@ -181,6 +181,9 @@ class TrainModel():
                 self.optimG.load_state_dict(self.optim_state)
             except Exception as ex:
                 print(ex)
+        print(self.total_iteration, self.iteration, iter_per_epoch // 100)
+        self.schedulerG.step_update(self.iteration)
+        print(self.optimG.param_groups[0]['lr'])
         self.G.to(device)
         run = True
         while run:
@@ -220,7 +223,7 @@ class TrainModel():
                 self.writer.add_scalar("lr/train", lrG, self.iteration)
                 self.writer.add_scalar("loss_G/train", loss_G, self.iteration)
                 self.iteration = self.iteration+1
-                logs = {'epoch':self.epoch, 'iter':self.iteration, 'lr':'%.9f'%lrG, 'train_losses':'%.9f'%(losses.avg), 'delta E':'%.9f'%(loss_deltaE)}
+                logs = {'epoch':self.epoch, 'iter':self.iteration, 'lr':'%.12f'%lrG, 'train_losses':'%.9f'%(losses.avg), 'delta E':'%.9f'%(loss_deltaE)}
                 pbar.set_postfix(logs)
                 
                 if i % 2000 == 0 and i != 0 and self.val_in_epoch:
