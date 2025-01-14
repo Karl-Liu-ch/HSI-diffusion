@@ -51,6 +51,7 @@ class Gan():
                  data_root, 
                  patch_size, 
                  batch_size, 
+                 data = None,
                  datanames = ['ARAD/'], 
                  random_split_data=True,
                  image_key = 'label',
@@ -71,6 +72,7 @@ class Gan():
         super().__init__()
         self.earlystop = EarlyStopper(patience=patience, min_delta=1e-2, start_epoch=10, gl_weight=1.4)
         self.progressive_module = EarlyStopper(patience=patience, min_delta=1e-2, start_epoch=10, gl_weight=1.4)
+        self.dataconfig = data
         self.image_key = image_key
         self.cond_key = cond_key
         self.n_critic = n_critic
@@ -208,7 +210,12 @@ class Gan():
 
     def train(self):
         self.set_device()
-        self.load_dataset()
+        try:
+            self.train_data = instantiate_from_config(self.dataconfig.params.train)
+            self.val_data = instantiate_from_config(self.dataconfig.params.validation)
+            print('instantiate from data config')
+        except Exception as ex:
+            self.load_dataset()
         train_loader = DataLoader(dataset=self.train_data, batch_size=self.prev_batch_size, shuffle=True, num_workers=8,
                                 pin_memory=True, drop_last=False)
         if len(self.val_data) > 95:
@@ -523,9 +530,9 @@ class Gan():
             # os.mkdir('/work3/s212645/Spectral_Reconstruction/RealHyperSpectrum/' + modelname + '/')
         except:
             pass
-        test_data = TestDataset(data_root=self.data_root, crop_size=1e8, valid_ratio = 0.1, test_ratio=0.1, datanames = self.datanames)
+        test_data = TestDataset(data_root=self.data_root, crop_size=256, stride=256, valid_ratio = 0.1, test_ratio=0.1, datanames = self.datanames)
         print("Test set samples: ", len(test_data))
-        test_loader = DataLoader(dataset=test_data, batch_size=2, shuffle=False, num_workers=32, pin_memory=True)
+        test_loader = DataLoader(dataset=test_data, batch_size=8, shuffle=False, num_workers=32, pin_memory=True)
         self.G.eval()
         losses_mrae = AverageMeter()
         losses_rmse = AverageMeter()
@@ -688,9 +695,9 @@ class Gan():
         self.optim_stateD = checkpoint['optimD']
         self.iteration = checkpoint['iter']
         self.epoch = checkpoint['epoch'] + 1
+        self.best_mrae = checkpoint['best_mrae']
+        self.loss_min = checkpoint['loss_min']
         try:
-            self.best_mrae = checkpoint['best_mrae']
-            self.loss_min = checkpoint['loss_min']
             # self.patch_size = checkpoint['patch_size']
             # self.prev_batch_size = checkpoint['batch_size']
             # self.earlystop.load(checkpoint['early_stop'])
@@ -796,7 +803,12 @@ class Gan_iter(Gan):
     def train(self):
         self.set_device()
         self.total_iteration = 400000
-        self.load_dataset()
+        try:
+            self.train_data = instantiate_from_config(self.dataconfig.params.train)
+            self.val_data = instantiate_from_config(self.dataconfig.params.validation)
+            print('instantiate from data config')
+        except Exception as ex:
+            self.load_dataset()
         self.schedulerG = CosineLRScheduler(self.optimG,t_initial=self.total_iteration - self.num_warmup,
                                             cycle_mul = 1,cycle_decay = 1,lr_min=1e-6,
                                             warmup_lr_init=self.learning_rate,warmup_t=self.num_warmup,

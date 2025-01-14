@@ -1,4 +1,5 @@
 from utils import instantiate_from_config
+from results.figures import gen_resutls
 import torch
 import os
 from omegaconf import OmegaConf
@@ -11,7 +12,7 @@ parser.add_argument('--method', type=str, default='sncwgan_dtn')
 parser.add_argument("-c",'--config', type=str, default='configs/dtgan/dtn_sndisc.yaml')
 parser.add_argument('--mode', type=str, default='train')
 parser.add_argument("--batch_size", type=int, default=32, help="batch size")
-parser.add_argument("--end_epoch", type=int, default=101, help="number of epochs")
+parser.add_argument("--end_epoch", type=int, default=200, help="number of epochs")
 parser.add_argument("--learning_rate", type=float, default=4e-4, help="initial learning rate")
 # parser.add_argument("--ckpath", type=str, default='/work3/s212645/Spectral_Reconstruction/checkpoint/gan/msdtn/')
 parser.add_argument("--data_root", type=str, default='/work3/s212645/Spectral_Reconstruction/')
@@ -24,16 +25,27 @@ parser.add_argument("--notone", action='store_false')
 parser.add_argument("-r", "--resume", type=str, const=True, default="", nargs="?", help="resume from logdir or checkpoint in logdir",)
 opt = parser.parse_args()
 
-
-
 if __name__ == '__main__':
     cfg_path = opt.config
-    cfg = OmegaConf.load(cfg_path)
-    cfg.params.update(vars(opt))
+    opt_cfg = OmegaConf.create()
+    opt_cfg.params = OmegaConf.create()
+    opt_cfg.params.update(vars(opt))
+    yaml_cfg = OmegaConf.load(cfg_path)
+    cfg = OmegaConf.merge(opt_cfg, yaml_cfg)
+    # cfg = OmegaConf.merge(yaml_cfg, opt_cfg)
+    if opt.mode == 'tuning':
+        cfg.params.data.params.train.params.crop_size = opt.patch_size
+        cfg.params.data.params.train.params.stride = opt.stride
+    print(OmegaConf.to_yaml(cfg))
+    
+    # cfg = OmegaConf.load(cfg_path)
+    # cfg.params.update(vars(opt))
+    
     model = instantiate_from_config(cfg)
     # modelname = str(cfg.params.genconfig.target).split('.')[-1]
     modelname = str(cfg.params.ckpath).split('/')[-2]
     print(modelname)
+    modelnames = [modelname]
     if opt.resume:
         try:
             model.load_checkpoint()
@@ -66,11 +78,13 @@ if __name__ == '__main__':
                 test_loader_cave = DataLoader(dataset=test_data_cave, batch_size=1, shuffle=False, num_workers=32, pin_memory=True)
 
                 test_loaders = {
-                    'BGU': test_loader_bgu,
                     'ARAD': test_loader_arad, 
+                    'BGU': test_loader_bgu,
                     'CAVE': test_loader_cave, 
                     }
                 model.test_full_resol(modelname, test_loaders)
+                # gen_resutls(modelnames, datanames = ['ARAD/'])
+                gen_resutls(modelnames, datanames = ['ARAD/', 'BGU/', 'CAVE/'])
                 opt.mode = 'stop'
             case 'valid':
                 model.load_checkpoint(best=True)
@@ -80,6 +94,9 @@ if __name__ == '__main__':
                     'ARAD-orig': test_loader_arad, 
                     }
                 model.test_full_resol(modelname, test_loaders)
+                opt.mode = 'gen_results'
+            case 'gen_results':
+                gen_resutls(modelnames, datanames = ['ARAD-origin/'], valid_ratio=0.0, test_ratio=0.053, random_split=False)
                 opt.mode = 'stop'
             case _:
                 run = False

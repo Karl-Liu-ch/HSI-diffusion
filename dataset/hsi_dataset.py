@@ -177,7 +177,20 @@ class ValidDataset(Dataset):
         return len(self.hypers)
     
 if __name__ == '__main__':
+    from datasets import TrainDataset as Train_dataset
     dataroot = '/work3/s212645/Spectral_Reconstruction/dataset/ARAD/'
-    dataset = TrainDataset(dataroot, crop_size=512, arg=True, stride=256)
+    dataset = TrainDataset(dataroot, crop_size=512, arg=False, stride=256)
     print(len(dataset))
     print(dataset[0]['label'].shape)
+    trainset = Train_dataset('/work3/s212645/Spectral_Reconstruction/', 512, 0.053, 0.0, arg=False, datanames=['ARAD-origin/'], stride=64, random_split = False)
+
+    # trainset = TrainDataset(dataroot, 128, 0.053, 0.0, arg=False, datanames=['ARAD-origin/'], stride=64, random_split = False)
+    # valset = TrainDataset(root, 512, 0.1, 0.8, arg=False, datanames=['ARAD/'], stride=128)
+    # print(trainset[0]['cond'] == valset[0]['cond'])
+    i = 0
+    for data, custom_data in tqdm(zip(dataset, trainset)):
+        i += 1
+        # if data['label'].all() == False:
+        #     print(i)
+        if not (data['label'] == custom_data['label']).all():
+            print(i)

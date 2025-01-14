@@ -406,6 +406,7 @@ class Loss_MRAE(nn.Module):
         assert outputs.shape == label.shape
         if label.all() == False:
             error = torch.abs(outputs - label) / (label + 1e-5)
+            # print('zero find in label')
         else:
             error = torch.abs(outputs - label) / label
         mrae = torch.mean(error.reshape(-1))
@@ -441,9 +442,9 @@ class Loss_RMSE(nn.Module):
 #         return torch.mean(psnr)
 
 class Loss_PSNR(nn.Module):
-    def __init__(self):
+    def __init__(self, data_range = (0.0,1.0)):
         super(Loss_PSNR, self).__init__()
-        self.psnr = PeakSignalNoiseRatio()
+        self.psnr = PeakSignalNoiseRatio(data_range=data_range)
 
     def forward(self, im_fake, im_true):
         psnr_score = self.psnr(im_fake.cpu(), im_true.cpu())

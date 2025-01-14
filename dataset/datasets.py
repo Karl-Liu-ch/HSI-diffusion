@@ -95,11 +95,13 @@ class Train_Dataset(Dataset):
         img_idx, patch_idx = idx//self.patch_per_img, idx%self.patch_per_img
         h_idx, w_idx = patch_idx//self.patch_per_line, patch_idx%self.patch_per_line
         bgr = self.bgrs[img_idx]
-        hyper = self.hypers[img_idx]
-        ycrcb = self.ycrcbs[img_idx]
+        hyper = self.hypers[img_idx].astype(np.float32)
+        ycrcb = self.ycrcbs[img_idx].astype(np.float32)
         hyper = hyper.astype(np.float32)
         ycrcb = (ycrcb / 240.0).astype(np.float32)
         bgr = (bgr / 255.0).astype(np.float32)
+        # ycrcb = ((ycrcb - ycrcb.min()) / (ycrcb.max() - ycrcb.min())).astype(np.float32)
+        # bgr = ((bgr - bgr.min()) / (bgr.max() - bgr.min())).astype(np.float32)
         bgr = np.transpose(bgr, [2, 0, 1])
         hyper = np.transpose(hyper, [2, 0, 1])
         ycrcb = np.transpose(ycrcb, [2, 0, 1])
@@ -286,6 +288,12 @@ class ValidDataset(GetDataset):
         self.length = len(self.hypers)
 
 if __name__ == '__main__':
-    trainset = Train_Dataset(root, 512, 0.1, 0.8, arg=False, datanames=['ARAD/'], stride=128)
-    valset = TrainDataset(root, 512, 0.1, 0.8, arg=False, datanames=['ARAD/'], stride=128)
-    print(trainset[0]['cond'] == valset[0]['cond'])
+    trainset = TrainDataset(root, 128, 0.053, 0.0, arg=False, datanames=['ARAD-origin/'], stride=64, random_split = False)
+    # valset = TrainDataset(root, 512, 0.1, 0.8, arg=False, datanames=['ARAD/'], stride=128)
+    # print(trainset[0]['cond'] == valset[0]['cond'])
+    i = 0
+    dataloader = DataLoader(trainset, batch_size=128)
+    for data in tqdm(dataloader):
+        i += 1
+        if data['label'].all() == False:
+            print(i)

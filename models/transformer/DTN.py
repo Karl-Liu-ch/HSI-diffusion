@@ -38,8 +38,8 @@ criterion_psnr = Loss_PSNR()
 criterion_psnrrgb = Loss_PSNR()
 criterion_sam = Loss_SAM()
 criterion_sid = Loss_SID()
-criterion_fid = Loss_Fid().to(device)
-criterion_ssim = Loss_SSIM().to(device)
+# criterion_fid = Loss_Fid().to(device)
+# criterion_ssim = Loss_SSIM().to(device)
 
 def change_resolution(module, new_resolution):
     new_resolution = tuple(new_resolution)
@@ -575,7 +575,7 @@ if __name__ == '__main__':
     # print(output.shape)
     # summary(model, (3, 256, 256))
     batch_size = 1
-    input_shape = (batch_size, 6, 256, 256)
+    input_shape = (batch_size, 6, 512, 512)
     flops, macs, params = calculate_flops(model=model, 
                                         input_shape=input_shape,
                                         output_as_string=True,

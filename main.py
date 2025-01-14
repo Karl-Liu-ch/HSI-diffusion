@@ -22,11 +22,17 @@ if __name__ == '__main__':
     
     cfg_path = opt.config
     cfg = OmegaConf.load(cfg_path)
-    try:
+    if hasattr(cfg, 'logdir'):
         logdir = cfg.logdir
-    except:
+    elif hasattr(cfg, 'model') and hasattr(cfg.model, 'params') and hasattr(cfg.model.params, 'logdir'):
+        logdir = cfg.model.params.logdir
+    else:
         logdir = opt.logdir
-    print(logdir)
+    # try:
+    #     logdir = cfg.logdir
+    # except:
+    #     logdir = opt.logdir
+    print(f'logdir: {logdir}')
     devices = []
     for gpu_id in opt.gpu_id.split(','):
         devices.append(int(gpu_id))
@@ -48,11 +54,10 @@ if __name__ == '__main__':
         ckpt_path = opt.resume
         try:
             model.init_from_ckpt(ckpt_path)
-            ckpt_path = None
+            # ckpt_path = None
         except Exception as ex:
-            ckpt_path = None
+            # ckpt_path = None
             print(ex)
-        # model = get_obj_from_str(cfg.model["target"]).load_from_checkpoint(ckpt_path, **cfg.model.get("params", dict()), map_location = 'cpu')
     else:
         ckpt_path = None
 
@@ -66,7 +71,7 @@ if __name__ == '__main__':
     #     model.load_pth = True
     match opt.mode:
         case 'train':
-            early_stop_callback = EarlyStopping(monitor=cfg.model.params.monitor, min_delta=0.002, patience=20, verbose=False, mode="min")
+            early_stop_callback = EarlyStopping(monitor=cfg.model.params.monitor, min_delta=0.002, patience=200, verbose=False, mode="min")
             checkpoint_callback = ModelCheckpoint(
                 monitor=cfg.model.params.monitor,
                 save_top_k=1,
@@ -85,6 +90,34 @@ if __name__ == '__main__':
                             default_root_dir=logdir, 
                             callbacks=[checkpoint_callback], 
                             # callbacks=[checkpoint_callback, early_stop_callback], 
+                            logger=tblogger, 
+                            val_check_interval = val_check_interval, 
+                            check_val_every_n_epoch=check_val_every_n_epoch)
+            data = instantiate_from_config(cfg.data)
+            trainer.fit(model, 
+                        data,
+                        ckpt_path=ckpt_path
+                        )
+            opt.mode = 'test'
+        case 'finetune':
+            early_stop_callback = EarlyStopping(monitor=cfg.model.params.monitor, min_delta=0.002, patience=200, verbose=False, mode="min")
+            checkpoint_callback = ModelCheckpoint(
+                monitor=cfg.model.params.monitor,
+                save_top_k=1,
+                mode='min',
+                save_last=True,
+                dirpath=logdir + 'lightning_logs/version_0/checkpoints/',
+                filename='epoch{epoch:02d}-mrae_avg{val/mrae_avg:.2f}',
+                auto_insert_metric_name=False
+            )
+            trainer = Trainer(accelerator="gpu",
+                            devices=devices,
+                            strategy=strategy,
+                            max_epochs=epochs,
+                            enable_checkpointing=True,
+                            sync_batchnorm=sync_batchnorm,
+                            default_root_dir=logdir, 
+                            callbacks=[checkpoint_callback], 
                             logger=tblogger, 
                             val_check_interval = val_check_interval, 
                             check_val_every_n_epoch=check_val_every_n_epoch)
@@ -129,6 +162,7 @@ if __name__ == '__main__':
                 model.lr = 4e-5
                 model.end_epoch = 20
                 model._temp_epoch = 0
+                model._temp_global_step = 0
                 trainer.fit(model, data)
         case "test":
             from torch.utils.data import DataLoader

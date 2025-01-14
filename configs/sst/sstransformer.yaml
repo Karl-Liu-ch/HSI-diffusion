@@ -10,6 +10,7 @@ params:
   datanames: ['ARAD/']
   padding_tpye: reflect
   padding_size: 128
+  num_warmup: 10
   genconfig:
     target: models.transformer.SST.SSTransformer
     params:

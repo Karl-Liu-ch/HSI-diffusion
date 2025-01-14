@@ -26,10 +26,10 @@ def computeDeltaE(recovered, groundTruth):
 def back_projection(img, camera_filter):
     return np.matmul(img, camera_filter)
 
-def test(modelname = 'DTN', dataname = 'ARAD/', valid_ratio=0.1, test_ratio=0.1):
+def test(modelname = 'DTN', dataname = 'ARAD/', valid_ratio=0.1, test_ratio=0.1, random_split=True):
     root = '/work3/s212645/Spectral_Reconstruction/'
     fake_root = f'/work3/s212645/Spectral_Reconstruction/FakeHyperSpectrum/{modelname}-{dataname}'
-    arad_test = TestDataset(data_root= root, crop_size=1e8, valid_ratio=valid_ratio, test_ratio=test_ratio, arg=False, datanames=[dataname])
+    arad_test = TestDataset(data_root= root, crop_size=1e8, valid_ratio=valid_ratio, test_ratio=test_ratio, arg=False, random_split=random_split, datanames=[dataname])
 
     filelist = os.listdir(fake_root)
     filelist.sort()
@@ -106,12 +106,12 @@ def DeltaEHeatmap(groundTruth, recovered):
 
 def gen_heatmap(real_hsi, fake_hsi, filename):
     mrae = computeMRAE_(real_hsi, fake_hsi)
-    sns.heatmap(mrae, cmap='jet', vmin=0, vmax=2)
+    sns.heatmap(mrae, cmap='jet', vmin=0, vmax=0.5)
     plt.axis('off')
     plt.savefig(f'results/{filename}-mrae.png')
     plt.close()
     sam = SAMHeatMap(fake_hsi, real_hsi)
-    sns.heatmap(sam, cmap='jet', vmin=0, vmax=2)
+    sns.heatmap(sam, cmap='jet', vmin=0, vmax=0.5)
     plt.axis('off')
     plt.savefig(f'results/{filename}-sam.png')
     plt.close()
@@ -184,9 +184,9 @@ def gen_all_figures(modelnames):
         test_set = testsets[k]
         dataname = k
         for i, testset in zip(range(len(test_set)), tqdm(test_set)):
-            real_hsi = testset['cond'].transpose(1,2,0)
+            # real_hsi = testset['cond'].transpose(1,2,0)
             data = dataname.split('/')[0]
-            real_hsi = testset['label'].transpose(1,2,0)
+            # real_hsi = testset['label'].transpose(1,2,0)
             try:
                 os.mkdir(f'results/GT/')
             except:
@@ -241,20 +241,82 @@ def gen_all_density(modelnames):
             plt.savefig(f'results/density/{i}.png')
             plt.close()
 
-def gen_resutls(modelnames):
-    datanames = ['ARAD/', 'BGU/', 'CAVE/']
+def gen_resutls(modelnames, datanames = ['ARAD/', 'BGU/', 'CAVE/'], valid_ratio=0.1, test_ratio=0.1, random_split=True):
     for modelname in modelnames:
         for dataname in datanames:
             if dataname == 'CAVE/':
                 test(modelname=modelname, dataname=dataname, valid_ratio=0, test_ratio=1)
             else:
-                test(modelname=modelname, dataname=dataname)
+                test(modelname=modelname, dataname=dataname, valid_ratio=valid_ratio, test_ratio=test_ratio, random_split=random_split)
 
+def gen_ablation_chart():
+    data = {"name": ['full model', 'no spatial', 'no spectral', 'no rpe']}
+    data['mrae'] = []
+    data['rmse'] = []
+    data['psnr'] = []
+    data['sam'] = []
+    data['mraergb'] = []
+    data['ssim'] = []
+    data['psnrrgb'] = []
+    data['deltae'] = []
+
+    file = 'results/ablation_chart_data.txt'
+    f = open(file, 'r')
+    metrics = {'mrae':"MRAE:", 'rmse':"RMSE:", 'psnr':"PSNR:", 'sam':"SAM:", 'mraergb':"MRAERGB: ", 'ssim':"SSIM: ", 'psnrrgb':"PSNRRGB: ", 'deltae':"Delta E: "}
+    full_model = re.compile('SSTransformer-ARAD/:')
+    no_spatial = re.compile('SSTransformer_no_spatial-ARAD/:')
+    no_spectral =re.compile('SSTransformer_no_spectral-ARAD/:')
+    no_rpe = re.compile('SSTransformer_no_rpe-ARAD/:')
+    for line in f.readlines():
+        if full_model.search(line) is not None:
+            for k, v in metrics.items():
+                d = line.split(v)[-1].split(',')[0]
+                d = float(d)
+                data[k].append(d)
+        if no_spatial.search(line) is not None:
+            for k, v in metrics.items():
+                d = line.split(v)[-1].split(',')[0]
+                d = float(d)
+                data[k].append(d)
+        if no_spectral.search(line) is not None:
+            for k, v in metrics.items():
+                d = line.split(v)[-1].split(',')[0]
+                d = float(d)
+                data[k].append(d)
+        if no_rpe.search(line) is not None:
+            for k, v in metrics.items():
+                d = line.split(v)[-1].split(',')[0]
+                d = float(d)
+                data[k].append(d)
+    print(data)
+    df = pd.DataFrame(data)
+    for k, v in metrics.items():
+        plt.figure(figsize=(6, 4))
+        sns.barplot(x='name', y=k, data=df, palette=sns.color_palette("Set2"))
+
+        # plt.ylim(0.08, 0.1)
+        # 添加标题和标签
+        ylabel = v.split(':')[0]
+        plt.title(f'Comparison of {ylabel}(ARAD)', fontweight='bold', fontsize=12)
+        plt.xlabel('Models', fontweight='bold', fontsize=12)
+        plt.ylabel(ylabel, fontweight='bold', fontsize=12)
+        plt.xticks(rotation=45)
+        plt.gca().set_xticklabels(plt.gca().get_xticklabels(), fontweight='bold', fontsize=12) 
+        plt.gca().set_yticklabels(plt.gca().get_yticklabels(), fontweight='bold', fontsize=12)
+
+        # 显示图形
+        plt.tight_layout()
+        plt.show()
+        plt.savefig(f'results/{ylabel}.png')
+        plt.close()
 
 if __name__ == '__main__':
-    # modelnames = ['MSTPlusPlus', 'AWAN', 'HSCNN_Plus', 'Restormer', 'pix2pix', 'DTN-SNTransformerDiscriminator', 'SSTransformer']
-    modelnames = ['SSTransformer_no_spatial', 'SSTransformer_no_spectral', 'SSTransformer_no_rpe', 'SSTransformer_ycrcb', 'SSTransformer']
-    # modelnames = ['SSTransformer_ycrcb']
-    gen_all_density(modelnames)
+    # modelnames = ['MSTPlusPlus', 'MST_L', 'MPRNet', 'AWAN', 'HSCNN_Plus', 'Restormer', 'pix2pix', 'DTN-SNTransformerDiscriminator']
+    # gen_all_density(modelnames)
+    # modelnames = ['SSTransformer_no_spatial', 'SSTransformer_no_spectral', 'SSTransformer_no_rpe', 'SSTransformer_ycrcb', 'SSTransformer']
+    # modelnames = ['MSTPlusPlus', 'AWAN', 'HSCNN_Plus', 'Restormer', 'pix2pix', 'SSTransformer', 'SSTransformer_no_spatial', 'SSTransformer_no_spectral', 'SSTransformer_no_rpe', 'SSTransformer_ycrcb']
+    modelnames = ['MST_L']
+    # modelnames = ['MPRNet']
+    gen_resutls(modelnames, datanames = ['ARAD/', 'BGU/', 'CAVE'])
     # gen_all_figures(modelnames)
-    # gen_resutls(modelnames)
+    # gen_ablation_chart()

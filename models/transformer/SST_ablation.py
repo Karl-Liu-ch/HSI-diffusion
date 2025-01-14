@@ -236,12 +236,14 @@ class Spectral_MSAB(nn.Module):
         return x
 
 class Spatial_MSAB(nn.Module):
-    def __init__(self, dim, head, resolution, split_size):
+    def __init__(self, dim, head, resolution, split_size, use_crossattn = True):
         super().__init__()
         self.resolution = resolution
         self.norm1 = nn.LayerNorm(dim)
-        # self.cswin = CSWinB(dim, reso=resolution, num_heads=head, split_size=split_size)
-        self.cswin = CSWinB_CrossAttn(dim, reso=resolution, num_heads=head, split_size=split_size)
+        if use_crossattn:
+            self.cswin = CSWinB_CrossAttn(dim, reso=resolution, num_heads=head, split_size=split_size)
+        else:
+            self.cswin = CSWinB(dim, reso=resolution, num_heads=head, split_size=split_size)
         self.norm2 =nn.LayerNorm(dim)
         self.sgfn = SGFN(dim, dim * 4, dim)
         # self.sgfn = SGFN_N(dim, 4)
@@ -255,13 +257,13 @@ class Spatial_MSAB(nn.Module):
         return x
 
 class SST(nn.Module):
-    def __init__(self, dim, head, resolution, split_size, use_spatial = True, use_spectral = True, use_rpe = True):
+    def __init__(self, dim, head, resolution, split_size, use_spatial = True, use_spectral = True, use_rpe = True, use_crossattn = True):
         super().__init__()
         self.resolution = resolution
         self.use_spatial = use_spatial
         self.use_spectral = use_spectral
         self.spectral_msa = Spectral_MSAB(dim, head, use_rpe)
-        self.spatial_msa = Spatial_MSAB(dim, head, resolution, split_size)
+        self.spatial_msa = Spatial_MSAB(dim, head, resolution, split_size, use_crossattn)
 
     def forward(self, x):
         b, c, h, w = x.shape
@@ -293,11 +295,14 @@ class ChannelAttn(nn.Module):
         return channelx
     
 class SSTB(nn.Module):
-    def __init__(self, dim, head, resolution, split_size, use_spatial = True, use_spectral = True, use_rpe = True):
+    def __init__(self, dim, head, resolution, split_size, use_spatial = True, use_spectral = True, use_rpe = True, use_channel_attn = True, use_crossattn = True):
         super().__init__()
-        self.channel_attn = ChannelAttn(dim)
+        if use_channel_attn:
+            self.channel_attn = ChannelAttn(dim)
+        else:
+            self.channel_attn = nn.Identity()
         # self.channel_attn = AWCA(dim)
-        self.sst = SST(dim, head, resolution, split_size, use_spatial = use_spatial, use_spectral = use_spectral, use_rpe = use_rpe)
+        self.sst = SST(dim, head, resolution, split_size, use_spatial = use_spatial, use_spectral = use_spectral, use_rpe = use_rpe, use_crossattn = use_crossattn)
 
     def forward(self, x):
         x = self.channel_attn(x)
@@ -305,11 +310,11 @@ class SSTB(nn.Module):
         return x
 
 class SSTLayer(nn.Module):
-    def __init__(self, dim, head, resolution, split_size, num_blocks, use_spatial = True, use_spectral = True, use_rpe = True):
+    def __init__(self, dim, head, resolution, split_size, num_blocks, use_spatial = True, use_spectral = True, use_rpe = True, use_channel_attn = True, use_crossattn = True):
         super().__init__()
         self.model = nn.ModuleList([])
         for i in range(num_blocks):
-            self.model.append(SSTB(dim, head, resolution, split_size, use_spatial = use_spatial, use_spectral = use_spectral, use_rpe = use_rpe))
+            self.model.append(SSTB(dim, head, resolution, split_size, use_spatial = use_spatial, use_spectral = use_spectral, use_rpe = use_rpe, use_channel_attn = use_channel_attn, use_crossattn=use_crossattn))
 
     def forward(self, x):
         for layer in self.model:
@@ -517,7 +522,8 @@ class UpSample(nn.Module):
         return self.model(x)
 
 class SSTransformer(nn.Module):
-    def __init__(self, in_dim = 3, out_dim = 31, hidden_dim = 32, split_size = 1, input_resolution = [128, 128], n_blocks = [1, 2, 3], bottle_depth = 4, n_refine = 2, patch_size = 8, use_spatial = True, use_spectral = True, use_rpe = True):
+    def __init__(self, in_dim = 3, out_dim = 31, hidden_dim = 32, split_size = 1, input_resolution = [128, 128], n_blocks = [1, 2, 3], 
+                 bottle_depth = 4, n_refine = 2, patch_size = 8, use_spatial = True, use_spectral = True, use_rpe = True, use_channel_attn = True, use_crossattn = True):
         super().__init__()
         self.embed = nn.Conv2d(in_dim, hidden_dim, 3, 1, 1)
         self.head = 2
@@ -531,7 +537,7 @@ class SSTransformer(nn.Module):
             prev_ch = new_ch
             new_ch = new_ch * 2
             self.downblocks.append(nn.ModuleList([
-                SSTLayer(prev_ch, self.head, self.input_resolution, self.split_size, n_blocks[i], use_spatial=use_spatial, use_spectral=use_spectral, use_rpe = use_rpe), 
+                SSTLayer(prev_ch, self.head, self.input_resolution, self.split_size, n_blocks[i], use_spatial=use_spatial, use_spectral=use_spectral, use_rpe = use_rpe, use_channel_attn = use_channel_attn, use_crossattn=use_crossattn), 
                 DownSample(prev_ch, new_ch)
                 ]))
             self.input_resolution[0] = self.input_resolution[0] // 2
@@ -553,10 +559,10 @@ class SSTransformer(nn.Module):
             self.upblocks.append(nn.ModuleList([
                 UpSample(prev_ch, new_ch),
                 nn.Conv2d(new_ch * 2, new_ch, 1, 1, bias = False),
-                SSTLayer(new_ch, self.head, self.input_resolution, self.split_size, n_blocks[i], use_spatial=use_spatial, use_spectral=use_spectral, use_rpe = use_rpe)
+                SSTLayer(new_ch, self.head, self.input_resolution, self.split_size, n_blocks[i], use_spatial=use_spatial, use_spectral=use_spectral, use_rpe = use_rpe, use_channel_attn = use_channel_attn, use_crossattn=use_crossattn)
                 ]))
         
-        self.refine_sst = SSTLayer(new_ch, self.head, self.input_resolution, self.split_size, n_refine, use_spatial=use_spatial, use_spectral=use_spectral, use_rpe = use_rpe)
+        self.refine_sst = SSTLayer(new_ch, self.head, self.input_resolution, self.split_size, n_refine, use_spatial=use_spatial, use_spectral=use_spectral, use_rpe = use_rpe, use_channel_attn = use_channel_attn, use_crossattn=use_crossattn)
         self.to_out = nn.Conv2d(new_ch, out_dim, 3, 1, 1)
         self.apply(self._init_weights)
 

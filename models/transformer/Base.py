@@ -7,7 +7,6 @@ from einops import rearrange, repeat
 from einops.layers.torch import Rearrange
 import torch.optim as optim
 import torch.backends.cudnn as cudnn
-from dataset.datasets import TrainDataset, ValidDataset, TestDataset
 from utils import *
 import os
 from torch.utils.data import DataLoader
@@ -17,20 +16,49 @@ from utils import instantiate_from_config
 from omegaconf import OmegaConf
 from options import opt
 import numpy as np
-from color_loss import deltaELoss
 from timm.scheduler.cosine_lr import CosineLRScheduler
+from differential_color_functions_no_device import rgb2lab_diff as rgb2lab_diff_cuda
+from differential_color_functions_no_device import ciede2000_diff as ciede2000_diff_cuda
 
-device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
+device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 # loss function
 criterion_mrae = Loss_MRAE()
 criterion_rmse = Loss_RMSE()
 criterion_psnr = Loss_PSNR()
 criterion_psnrrgb = Loss_PSNR()
-criterion_sam = Loss_SAM()
-criterion_sid = Loss_SID()
-criterion_fid = Loss_Fid().to(device)
-criterion_ssim = Loss_SSIM().to(device)
+criterion_sam = SAMLoss()
 
+def deltaE_Loss(fake, gt):
+    loss = ciede2000_diff_cuda(rgb2lab_diff_cuda(gt), rgb2lab_diff_cuda(fake))
+    color_loss=loss.mean()
+    return color_loss
+
+class Loss_DeltaE(nn.Module):
+    def __init__(self):
+        super().__init__()
+        self.device = device
+        self.model_hs2rgb = nn.Conv2d(31, 3, 1, bias=False)
+        cie_matrix = CAM_FILTER
+        cie_matrix = torch.from_numpy(np.transpose(cie_matrix, [1, 0])).unsqueeze(-1).unsqueeze(-1).float()
+        self.model_hs2rgb.weight.data = cie_matrix
+        self.model_hs2rgb.weight.requires_grad = False
+
+    def forward(self, outputs, label, rgb_gt = None):
+        # hs2rgb
+        if rgb_gt is None:
+            rgb_tensor = self.model_hs2rgb(outputs)
+            rgb_tensor = normalization_image(rgb_tensor)
+            rgb_label = self.model_hs2rgb(label)
+            rgb_label = normalization_image(rgb_label)
+        else:
+            rgb_tensor = self.model_hs2rgb(outputs)
+            rgb_tensor = normalization_image(rgb_tensor)
+            rgb_label = normalization_image(rgb_gt)
+        deltaE = deltaE_Loss(rgb_tensor, rgb_label)
+        return deltaE
+
+# criterion_deltae = LossDeltaE().cuda()
+# deltaE_criterion = Loss_DeltaE()
 
 class BaseModel(pl.LightningModule):
     def __init__(self, *,
@@ -40,6 +68,7 @@ class BaseModel(pl.LightningModule):
                  modelconfig,
                  num_warmup = 0,
                  monitor = None, 
+                 finetune = False,
                  **kwargs, 
                  ):
         super().__init__()
@@ -57,8 +86,10 @@ class BaseModel(pl.LightningModule):
         self.criterion = criterion_mrae
         self.root = '/work3/s212645/Spectral_Reconstruction/checkpoint/'+self.name+'/'
         self.learning_rate = learning_rate
+        self.deltaE_criterion = Loss_DeltaE()
         print(learning_rate)
         self.cond_key = cond_key
+        self.finetune = finetune
         if monitor is not None:
             self.monitor = monitor
         # make checkpoint dir
@@ -80,7 +111,12 @@ class BaseModel(pl.LightningModule):
                     print("Deleting key {} from state_dict.".format(k))
                     del sd[k]
         self.load_state_dict(sd, strict=False)
-        self._temp_epoch = torch.load(path, map_location="cpu")['epoch']
+        if self.finetune:
+            self._temp_epoch = 0
+            self._temp_global_step = 0
+        else:
+            self._temp_epoch = torch.load(path, map_location="cpu")['epoch']
+            self._temp_global_step = torch.load(path, map_location="cpu")['global_step']
         print(f"Restored from {path}")
         self.init_optim_ckpt(path)
 
@@ -100,10 +136,14 @@ class BaseModel(pl.LightningModule):
         self.toggle_optimizer(opt)
         output = self.model(images)
         loss_mrae = criterion_mrae(output, labels)
+        loss_sam = criterion_sam(output, labels)
+        loss_deltaE = self.deltaE_criterion(output, labels)
+        # loss_deltaE = deltaE_criterion(output, labels)
+        loss_G = loss_mrae + loss_sam * 0.1 + loss_deltaE * 0.1
         log_dict_g = {'train/mrae': loss_mrae}
         self.log_dict(log_dict_g, prog_bar=True, logger=True, on_step=True, on_epoch=True)
         self.log_dict({"lr": opt.param_groups[0]['lr']}, prog_bar=True, logger=True, on_step=True, on_epoch=False)
-        self.manual_backward(loss_mrae)
+        self.manual_backward(loss_G)
         opt.step()
         opt.zero_grad()
         self.untoggle_optimizer(opt)
@@ -120,7 +160,7 @@ class BaseModel(pl.LightningModule):
         loss_rmse = criterion_rmse(output, labels).detach()
         loss_psnr = criterion_psnr(output, labels).detach()
         loss_sam = criterion_sam(output, labels).detach()
-        criterion_sam.reset()
+        # criterion_sam.reset()
         criterion_psnr.reset()
         self.log_dict({'val/mrae': loss_mrae}, sync_dist=True, prog_bar=True, on_epoch=True, on_step=True)
         self.log_dict({'val/rmse': loss_rmse, 'val/psnr': loss_psnr, 'val/sam': loss_sam}, sync_dist=True)
@@ -148,14 +188,23 @@ class BaseModel(pl.LightningModule):
                 pass
         return({"optimizer": opt_ae, "lr_scheduler": sch_ae})
     
-    def on_train_start(self):
+    # def on_train_start(self):
+    #     self.iter_per_epoch = len(self.trainer.train_dataloader)
+    #     self.set_current_epoch(self._temp_epoch) # This is being loaded from the model
+    #     total_batch_idx = self.current_epoch * len(self.trainer.train_dataloader)
+    #     global_step = total_batch_idx
+    #     self.set_global_step(global_step)
+    #     self.iterations = self.global_step
+    #     print(self.current_epoch, self.global_step)
+
+    def on_train_start(self) -> None:
         self.iter_per_epoch = len(self.trainer.train_dataloader)
         self.set_current_epoch(self._temp_epoch) # This is being loaded from the model
-        total_batch_idx = self.current_epoch * len(self.trainer.train_dataloader)
-        global_step = total_batch_idx
-        self.set_global_step(global_step)
-        self.iterations = self.global_step
-        print(self.current_epoch, self.global_step)
+        self.set_global_step(self._temp_global_step)
+        # self.global_step_manually = self.current_epoch * self.iter_per_epoch
+        # self.modify_iter = self.global_step_manually - self.global_step
+        # print(self.global_step_manually)
+        print(self.epoch, self.global_step)
 
     def set_current_epoch(self, epoch: int):
         self.trainer.fit_loop.epoch_progress.current.processed = epoch

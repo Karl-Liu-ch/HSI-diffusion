@@ -35,8 +35,8 @@ criterion_psnr = Loss_PSNR()
 criterion_psnrrgb = Loss_PSNR()
 criterion_sam = Loss_SAM()
 criterion_sid = Loss_SID()
-criterion_fid = Loss_Fid().to(device)
-criterion_ssim = Loss_SSIM().to(device)
+# criterion_fid = Loss_Fid().to(device)
+# criterion_ssim = Loss_SSIM().to(device)
 
 def change_resolution(module, new_resolution):
     new_resolution = tuple(new_resolution)

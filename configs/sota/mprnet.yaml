@@ -1,0 +1,18 @@
+target: models.transformer.basemodel.TrainModel
+params:
+  ckpath: /work3/s212645/Spectral_Reconstruction/checkpoint/MPRNet/
+  image_key: 'label'
+  cond_key: 'cond'
+  # cond_key: 'ycrcb'
+  valid_ratio: 0.1
+  test_ratio: 0.1
+  progressive_train: False
+  datanames: ['ARAD/']
+  padding_tpye: reflect
+  padding_size: 128
+  multi_loss: False
+  genconfig:
+    target: models.transformer.MPRNet.MPRNet
+    params:
+      in_c: 31
+      num_cab: 4

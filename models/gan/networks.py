@@ -20,6 +20,7 @@ from models.gan.attention import *
 from models.gan.SNResNet import *
 from models.gan.SNDenseNet import *
 from torchsummary import summary
+from calflops import calculate_flops
 
 class UnetGenerator(nn.Module):
     def __init__(self, input_nc, output_nc, num_downs = 6, ngf=64, norm_layer=nn.BatchNorm2d, use_dropout=False, n_blocks = 0):

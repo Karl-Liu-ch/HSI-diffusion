@@ -14,7 +14,7 @@ from torchsummary import summary
 import shutil
 from utils import *
 from timm.scheduler.cosine_lr import CosineLRScheduler
-
+from NTIRE2022Util import compute_psnr, compute_mse, compute_rmse, compute_sam, computeMRAE
 
 BASE_BS = 32
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
@@ -23,10 +23,10 @@ device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 criterion_mrae = Loss_MRAE()
 criterion_rmse = Loss_RMSE()
 criterion_psnr = Loss_PSNR()
-criterion_psnrrgb = Loss_PSNR()
+criterion_psnrrgb = Loss_PSNR(data_range=(0,255))
 criterion_sam = Loss_SAM()
 criterion_sid = Loss_SID()
-criterion_fid = Loss_Fid().to(device)
+# criterion_fid = Loss_Fid().to(device)
 criterion_ssim = Loss_SSIM().to(device)
 
 def normalize(cond):
@@ -61,13 +61,15 @@ class TrainModel():
                  val_in_epoch = False,
                  num_warmup = 0,
                  finetune = False,
+                 finetune_epoch = 0,
+                 multi_loss = True,
                  **kargs):
         super().__init__()
         self.val_in_epoch = val_in_epoch
         self.image_key = image_key
         self.cond_key = cond_key
-        self.earlystop = EarlyStopper(patience=10, min_delta=1e-2, start_epoch=40, gl_weight=1.2)
-        self.progressive_module = EarlyStopper(patience=10, min_delta=1e-2, start_epoch=40, gl_weight=1.2)
+        self.earlystop = EarlyStopper(patience=1000, min_delta=1e-2, start_epoch=4000, gl_weight=1.2)
+        self.progressive_module = EarlyStopper(patience=1000, min_delta=1e-2, start_epoch=4000, gl_weight=1.2)
         self.progressive_train = progressive_train
         self.n_critic = n_critic
         self.multiGPU = multigpu
@@ -81,6 +83,8 @@ class TrainModel():
         self.total_iter = total_iter
         self.num_warmup = num_warmup
         self.finetune = finetune
+        self.finetune_epoch = 0
+        self.multi_loss = multi_loss
         # self.G.apply(init_weights_uniform)
         # if self.multiGPU:
         #     self.G = nn.DataParallel(self.G)
@@ -99,6 +103,7 @@ class TrainModel():
         self.best_mrae = 1000
         self.data_root = data_root
         self.patch_size = patch_size
+        print(self.patch_size)
         self.batch_size = batch_size
         self.top_k = 3
         self.random_split_data=random_split_data
@@ -118,7 +123,7 @@ class TrainModel():
         self.root = ckpath
         if not opt.resume:
             shutil.rmtree(self.root + 'runs/', ignore_errors=True)
-        self.writer = SummaryWriter(log_dir=self.root + 'runs/')
+        # self.writer = SummaryWriter(log_dir=self.root + 'runs/')
         if not os.path.exists(self.root):
             os.makedirs(self.root)
         self.init_metrics()
@@ -161,8 +166,14 @@ class TrainModel():
             self.val_data = instantiate_from_config(self.dataconfig.params.validation)
         except Exception as ex:
             self.load_dataset()
-        iter_per_epoch = len(self.train_data)
-        self.total_iteration = self.end_epoch * (iter_per_epoch // self.batch_size + 1)
+        train_loader = DataLoader(dataset=self.train_data, batch_size=self.batch_size, shuffle=True, num_workers=32,
+                                pin_memory=True, drop_last=False)
+        if len(self.val_data) > 95:
+            val_loader = DataLoader(dataset=self.val_data, batch_size=self.batch_size, shuffle=False, num_workers=32, pin_memory=True)
+        else:
+            val_loader = DataLoader(dataset=self.val_data, batch_size=1, shuffle=False, num_workers=32, pin_memory=True)
+        iter_per_epoch = len(train_loader)
+        self.total_iteration = self.end_epoch * iter_per_epoch
         if self.val_in_epoch:
             # self.schedulerG = torch.optim.lr_scheduler.CosineAnnealingLR(self.optimG, self.total_iter, eta_min=1e-6)
             self.total_iteration = self.total_iter
@@ -195,12 +206,6 @@ class TrainModel():
                     run = False
             self.G.train()
             losses = AverageMeter()
-            train_loader = DataLoader(dataset=self.train_data, batch_size=self.batch_size, shuffle=True, num_workers=32,
-                                    pin_memory=True, drop_last=False)
-            if len(self.val_data) > 95:
-                val_loader = DataLoader(dataset=self.val_data, batch_size=self.batch_size, shuffle=False, num_workers=32, pin_memory=True)
-            else:
-                val_loader = DataLoader(dataset=self.val_data, batch_size=1, shuffle=False, num_workers=32, pin_memory=True)
             pbar = tqdm(train_loader)
             for i, batch in enumerate(pbar):
                 labels, cond = self.get_input(batch)
@@ -209,19 +214,20 @@ class TrainModel():
                 self.optimG.zero_grad()
                 lrG = self.optimG.param_groups[0]['lr']
                 loss_G = self.criterion(x_fake, labels)
+                losses.update(loss_G.data)
                 loss_deltaE = self.deltaE_criterion(x_fake, labels)
-                l2_loss = F.mse_loss(x_fake, labels) * 5.0
-                loss_G += l2_loss
                 loss_sam = self.sam_criterion(x_fake, labels)
-                loss_G = loss_G + loss_sam * 0.1 + loss_deltaE * 0.1
+                l2_loss = F.mse_loss(x_fake, labels)
+                # loss_G += l2_loss
+                if self.multi_loss:
+                    loss_G = loss_G + loss_sam * 0.1 + loss_deltaE * 0.1
                 loss_G.backward()
                 self.optimG.step()
                 self.schedulerG.step_update(self.iteration)
                 
-                losses.update(loss_G.data)
-                self.writer.add_scalar("MRAE/train", loss_G, self.iteration)
-                self.writer.add_scalar("lr/train", lrG, self.iteration)
-                self.writer.add_scalar("loss_G/train", loss_G, self.iteration)
+                # self.writer.add_scalar("MRAE/train", loss_G, self.iteration)
+                # self.writer.add_scalar("lr/train", lrG, self.iteration)
+                # self.writer.add_scalar("loss_G/train", loss_G, self.iteration)
                 self.iteration = self.iteration+1
                 logs = {'epoch':self.epoch, 'iter':self.iteration, 'lr':'%.12f'%lrG, 'train_losses':'%.9f'%(losses.avg), 'delta E':'%.9f'%(loss_deltaE)}
                 pbar.set_postfix(logs)
@@ -246,10 +252,10 @@ class TrainModel():
         # validation
         mrae_loss, rmse_loss, psnr_loss, sam_loss, sid_loss = self.validate(val_loader)
         print(f'MRAE:{mrae_loss}, RMSE: {rmse_loss}, PSNR:{psnr_loss}, SAM: {sam_loss}, SID: {sid_loss}')
-        self.writer.add_scalar("MRAE/val", mrae_loss, self.epoch)
-        self.writer.add_scalar("RMSE/val", rmse_loss, self.epoch)
-        self.writer.add_scalar("PSNR/val", psnr_loss, self.epoch)
-        self.writer.add_scalar("SAM/val", sam_loss, self.epoch)
+        # self.writer.add_scalar("MRAE/val", mrae_loss, self.epoch)
+        # self.writer.add_scalar("RMSE/val", rmse_loss, self.epoch)
+        # self.writer.add_scalar("PSNR/val", psnr_loss, self.epoch)
+        # self.writer.add_scalar("SAM/val", sam_loss, self.epoch)
         # Save model
         print(f'Saving to {self.root}')
         self.save_checkpoint()
@@ -281,8 +287,14 @@ class TrainModel():
             self.val_data = instantiate_from_config(self.dataconfig.params.validation)
         except Exception as ex:
             self.load_dataset()
-        iter_per_epoch = len(self.train_data)
-        self.total_iteration = self.end_epoch * (iter_per_epoch // self.batch_size + 1)
+        train_loader = DataLoader(dataset=self.train_data, batch_size=self.batch_size, shuffle=True, num_workers=32,
+                                pin_memory=True, drop_last=False)
+        if len(self.val_data) > 95:
+            val_loader = DataLoader(dataset=self.val_data, batch_size=self.batch_size, shuffle=False, num_workers=32, pin_memory=True)
+        else:
+            val_loader = DataLoader(dataset=self.val_data, batch_size=1, shuffle=False, num_workers=32, pin_memory=True)
+        iter_per_epoch = len(train_loader)
+        self.total_iteration = self.end_epoch * iter_per_epoch
         self.learning_rate = 4e-5
         self.optimG = optim.Adam(self.G.parameters(), lr=self.learning_rate, betas=(0.9, 0.999), eps=1e-8)
         self.prog_iter = iters
@@ -294,7 +306,7 @@ class TrainModel():
         else:
             self.schedulerG = CosineLRScheduler(self.optimG, t_initial=self.total_iteration,
                                             cycle_mul = 1,cycle_decay = 1,lr_min=1e-6,
-                                            warmup_lr_init=self.learning_rate,warmup_t=self.iteration,
+                                            warmup_lr_init=self.learning_rate,warmup_t=self.num_warmup * iter_per_epoch,
                                             cycle_limit=1,t_in_epochs=False)
         if self.optim_state is not None:
             try:
@@ -312,12 +324,6 @@ class TrainModel():
                     run = False
             self.G.train()
             losses = AverageMeter()
-            train_loader = DataLoader(dataset=self.train_data, batch_size=self.batch_size, shuffle=True, num_workers=32,
-                                    pin_memory=True, drop_last=False)
-            if len(self.val_data) > 95:
-                val_loader = DataLoader(dataset=self.val_data, batch_size=self.batch_size, shuffle=False, num_workers=32, pin_memory=True)
-            else:
-                val_loader = DataLoader(dataset=self.val_data, batch_size=1, shuffle=False, num_workers=32, pin_memory=True)
             pbar = tqdm(train_loader)
             for i, batch in enumerate(pbar):
                 labels, cond = self.get_input(batch)
@@ -326,19 +332,20 @@ class TrainModel():
                 self.optimG.zero_grad()
                 lrG = self.optimG.param_groups[0]['lr']
                 loss_G = self.criterion(x_fake, labels)
+                losses.update(loss_G.data)
                 loss_deltaE = self.deltaE_criterion(x_fake, labels)
                 l2_loss = F.mse_loss(x_fake, labels)
-                loss_G += l2_loss
                 loss_sam = self.sam_criterion(x_fake, labels)
-                loss_G = loss_G + loss_sam * 0.1 + loss_deltaE * 0.1
+                if self.multi_loss:
+                    loss_G = loss_G + loss_sam * 0.1 + loss_deltaE * 0.1
+                    # + l2_loss
                 loss_G.backward()
                 self.optimG.step()
                 self.schedulerG.step_update(self.iteration)
                 
-                losses.update(loss_G.data)
-                self.writer.add_scalar("train/MRAE", loss_G, self.iteration)
-                self.writer.add_scalar("train/lr", lrG, self.iteration)
-                self.writer.add_scalar("train/loss_G", loss_G, self.iteration)
+                # self.writer.add_scalar("train/MRAE", loss_G, self.iteration)
+                # self.writer.add_scalar("train/lr", lrG, self.iteration)
+                # self.writer.add_scalar("train/loss_G", loss_G, self.iteration)
                 self.iteration = self.iteration+1
                 logs = {'epoch':self.epoch, 'iter':self.iteration, 'lr':'%.9f'%lrG, 'train_losses':'%.9f'%(losses.avg), 'delta E':'%.9f'%(loss_deltaE)}
                 pbar.set_postfix(logs)
@@ -353,18 +360,40 @@ class TrainModel():
                 break
             self.epoch += 1
 
-    def finetuning(self, iters = int(5e4)):
-        self.load_checkpoint(best=True)
-        self.patch_size = 256
-        self.batch_size = self.batch_size // 4
-        self.stride = self.patch_size // 2
-        # self.progressive_training(iters)
+    def finetuning(self):
+        # self.patch_size = 256
+        if self.val_in_epoch:
+            iters = self.total_iter
+        else:
+            iters = self.finetune_epoch
+        print(self.patch_size)
+        match self.patch_size:
+            case 256:
+                self.load_checkpoint(best=True)
+                self.batch_size = self.batch_size // 4
+                self.stride = self.patch_size // 2
+                self.progressive_training(iters)
+                self.patch_size = 512
+            case 512:
+                self.load_checkpoint(best=True)
+                # self.batch_size = self.batch_size // 8
+                self.batch_size = 1
+                self.stride = self.patch_size // 2
+                self.progressive_training(iters)
+                self.patch_size = None
+
+    # def finetuning(self, iters = int(5e4)):
+    #     self.load_checkpoint(best=True)
+    #     self.patch_size = 256
+    #     self.batch_size = self.batch_size // 4
+    #     self.stride = self.patch_size // 2
+    #     self.progressive_training(iters)
         
-        self.load_checkpoint(best=True)
-        self.patch_size = 512
-        self.batch_size = self.batch_size // 8
-        self.stride = self.patch_size // 2
-        self.progressive_training(iters)
+    #     self.load_checkpoint(best=True)
+    #     self.patch_size = 512
+    #     self.batch_size = self.batch_size // 8
+    #     self.stride = self.patch_size // 2
+    #     self.progressive_training(iters)
 
     def hsi2rgb(self, hsi):
         rgb = self.deltaE_criterion.model_hs2rgb(hsi)
@@ -383,15 +412,20 @@ class TrainModel():
             with torch.no_grad():
                 # compute output
                 output = self.G(cond)
-                if i == 0:
-                    rgb = self.hsi2rgb(output)[0,:,:,:]
-                    self.writer.add_image("fake/val", rgb, self.epoch)
-                    rgb = self.hsi2rgb(label)[0,:,:,:]
-                    self.writer.add_image("real/val", rgb, self.epoch)
+                # if i == 0:
+                #     rgb = self.hsi2rgb(output)[0,:,:,:]
+                #     # self.writer.add_image("fake/val", rgb, self.epoch)
+                #     rgb = self.hsi2rgb(label)[0,:,:,:]
+                #     # self.writer.add_image("real/val", rgb, self.epoch)
                 loss_mrae = criterion_mrae(output, label)
                 loss_rmse = criterion_rmse(output, label)
                 loss_psnr = criterion_psnr(output, label)
                 loss_sam = criterion_sam(output, label)
+
+                # loss_mrae = computeMRAE(label.cpu().numpy(), output.cpu().numpy())
+                # loss_rmse = compute_rmse(label.cpu().numpy(), output.cpu().numpy())
+                # loss_psnr = compute_psnr(label.cpu().numpy(), output.cpu().numpy(), 1.0)
+                # loss_sam = compute_sam(label.cpu().numpy(), output.cpu().numpy())
                 loss_sid = criterion_sid(output, label)
                 logs = {'MRAE':'%.9f'%(loss_mrae), 'RMSE':'%.9f'%loss_rmse, 'PSNR':'%.9f'%loss_psnr, 'SAM':'%.9f'%loss_sam}
                 pbar.set_postfix(logs)
@@ -544,9 +578,9 @@ class TrainModel():
         self.optim_state = checkpoint['optimG']
         self.iteration = checkpoint['iter']
         self.epoch = checkpoint['epoch']
+        self.best_mrae = checkpoint['best_mrae']
         try:
             self.load_metrics()
-            self.best_mrae = checkpoint['best_mrae']
         except:
             pass
         print("pretrained model loaded, iteration: ", self.iteration)
@@ -668,9 +702,9 @@ class TrainModel_iter(TrainModel):
                 self.schedulerG.step_update(self.iteration)
                 
                 losses.update(loss_G.data)
-                self.writer.add_scalar("MRAE/train", loss_G, self.iteration)
-                self.writer.add_scalar("lr/train", lrG, self.iteration)
-                self.writer.add_scalar("loss_G/train", loss_G, self.iteration)
+                # self.writer.add_scalar("MRAE/train", loss_G, self.iteration)
+                # self.writer.add_scalar("lr/train", lrG, self.iteration)
+                # self.writer.add_scalar("loss_G/train", loss_G, self.iteration)
                 self.iteration = self.iteration+1
                 logs = {'epoch':self.epoch, 'iter':self.iteration, 'lr':'%.9f'%lrG, 'train_losses':'%.9f'%(losses.avg), 'delta E':'%.9f'%(loss_deltaE)}
                 pbar.set_postfix(logs)
@@ -680,10 +714,10 @@ class TrainModel_iter(TrainModel):
                     # validation
                     mrae_loss, rmse_loss, psnr_loss, sam_loss, sid_loss = self.validate(val_loader)
                     print(f'MRAE:{mrae_loss}, RMSE: {rmse_loss}, PSNR:{psnr_loss}, SAM: {sam_loss}, SID: {sid_loss}')
-                    self.writer.add_scalar("MRAE/val", mrae_loss, self.epoch)
-                    self.writer.add_scalar("RMSE/val", rmse_loss, self.epoch)
-                    self.writer.add_scalar("PSNR/val", psnr_loss, self.epoch)
-                    self.writer.add_scalar("SAM/val", sam_loss, self.epoch)
+                    # self.writer.add_scalar("MRAE/val", mrae_loss, self.epoch)
+                    # self.writer.add_scalar("RMSE/val", rmse_loss, self.epoch)
+                    # self.writer.add_scalar("PSNR/val", psnr_loss, self.epoch)
+                    # self.writer.add_scalar("SAM/val", sam_loss, self.epoch)
                     # Save model
                     print(f'Saving to {self.root}')
                     self.save_checkpoint()

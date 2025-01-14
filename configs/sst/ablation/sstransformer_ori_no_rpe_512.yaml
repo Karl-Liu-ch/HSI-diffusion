@@ -1,0 +1,60 @@
+target: models.transformer.basemodel.TrainModel
+params:
+  ckpath: /work3/s212645/Spectral_Reconstruction/checkpoint/SSTransformer_orig_no_rpe/
+  image_key: 'label'
+  cond_key: 'cond'
+  # cond_key: 'ycrcb'
+  valid_ratio: 0.053
+  test_ratio: 0.0
+  datanames: ['ARAD-origin/']
+  random_split_data: False
+  stride: 128
+  padding_size: 512
+  patch_size: 512
+  total_iter: 400000
+  progressive_train: False
+  val_in_epoch: True
+  finetune: True
+  
+  genconfig:
+    target: models.transformer.SST_ablation.SSTransformer
+    params:
+      in_dim: 3
+      # in_dim: 6
+      out_dim: 31
+      split_size: 1
+      input_resolution: [128, 128]
+      n_blocks: [2, 2]
+      bottle_depth: 2
+      n_refine: 2
+      patch_size: 8
+      use_spatial: True
+      use_spectral: True
+      use_rpe: False
+
+  data:
+    target: dataset.base.DataModuleFromConfig
+    params:
+      batch_size: 40
+      num_workers: 32
+      train:
+        target: dataset.datasets.TrainDataset
+        params:
+          data_root: /work3/s212645/Spectral_Reconstruction/
+          crop_size: 512
+          valid_ratio: 0.053
+          test_ratio: 0.0
+          random_split: False
+          arg: True
+          stride: 256
+          datanames: ['ARAD-origin/']
+      validation:
+        target: dataset.datasets.ValidDataset
+        params:
+          data_root: /work3/s212645/Spectral_Reconstruction/
+          crop_size: 512
+          valid_ratio: 0.053
+          test_ratio: 0.0
+          random_split: False
+          arg: False
+          datanames: ['ARAD-origin/']
