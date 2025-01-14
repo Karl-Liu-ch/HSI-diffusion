@@ -587,9 +587,11 @@ class TrainModel():
 
     def test_full_resol(self, modelname, test_loaders):
         self.G.eval()
-        root = '/work3/s212645/Spectral_Reconstruction/RealHyperSpectrum/'
         for name, test_loader in test_loaders.items():
-            save_path = f'/work3/s212645/Spectral_Reconstruction/FakeHyperSpectrum/{modelname}-{name}/'
+            if name == 'ARAD-orig':
+                save_path = f'/work3/s212645/Spectral_Reconstruction/FakeHyperSpectrum/{modelname}-origin/'
+            else:
+                save_path = f'/work3/s212645/Spectral_Reconstruction/FakeHyperSpectrum/{modelname}-{name}/'
             if not os.path.exists(save_path):
                 os.mkdir(save_path)
             losses_mrae = AverageMeter()
