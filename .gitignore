@@ -1,8 +1,4 @@
-/models/__pycache__/
-/ldm/__pycache__/
-/__pycache__/
-/models/transformer/__pycache__/
-/results/__pycache__/
+**/__pycache__/
 .ssh/
 *.err
 *.out
