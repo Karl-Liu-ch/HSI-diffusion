@@ -33,7 +33,7 @@ params:
           test_ratio: 0.0
           random_split: False
           arg: True
-          stride: 32
+          stride: 8
           datanames: ['ARAD-origin/']
       validation:
         target: dataset.datasets.ValidDataset

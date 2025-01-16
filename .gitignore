@@ -4,6 +4,8 @@
 /models/transformer/__pycache__/
 /results/__pycache__/
 .ssh/
+*.err
+*.out
 results/AWAN/*.png
 results/GT/*.png
 results/HSCNN_Plus/*.png
@@ -13,3 +15,5 @@ results/MSTPlusPlus/*.png
 results/Restormer/*.png
 results/SSTransformer_orig/*.png
 results/SSTransformer_orig_no_rpe/*.png
+results/SSTransformer_orig_no_spatial/*.png
+results/SSTransformer_orig_no_spectral/*.png

@@ -37,8 +37,8 @@ conda activate pytorch
 cd /zhome/02/b/164706/Master_Courses/thesis/HSI-diffusion/
 export PYTHONUNBUFFERED=1
 # python -u train.py -c configs/cnn_residual/cnn_residual.yaml --gpu_id 0 --batch_size 128 --mode train --learning_rate 1e-4 -r
-python -u train.py -c configs/cnn_residual/cnn_residual_256.yaml --gpu_id 0 --batch_size 128 --mode tuning --learning_rate 1e-5 -r
+# python -u train.py -c configs/cnn_residual/cnn_residual_256.yaml --gpu_id 0 --batch_size 128 --mode tuning --learning_rate 1e-5 -r
 # python -u train.py -c configs/cnn_residual/cnn_residual_512.yaml --gpu_id 0 --batch_size 128 --mode tuning --learning_rate 1e-5 -r
 
 # python -u train.py -c configs/cnn_residual/cnn_residual_multistage.yaml --gpu_id 0 --batch_size 64 --mode train --learning_rate 2e-4 -r
-# python -u train.py -c configs/cnn_residual/transformer.yaml --gpu_id 0 --batch_size 64 --mode train --learning_rate 2e-4 -r
+python -u train.py -c configs/cnn_residual/transformer.yaml --gpu_id 0 --batch_size 64 --mode train --learning_rate 2e-4 -r
