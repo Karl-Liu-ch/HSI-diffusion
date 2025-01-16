@@ -123,6 +123,15 @@ def gen_heatmap_deltaE(real_rgb, fake_rgb, filename):
     plt.savefig(f'results/{filename}-deltaE.png')
     plt.close()
 
+def gen_heatmap_deltaE_hsi(real_hsi, fake_hsi, filename):
+    real_rgb = reconRGBfromNumpy(real_hsi)
+    fake_rgb = reconRGBfromNumpy(fake_hsi)
+    deltaE = DeltaEHeatmap(real_rgb, fake_rgb)
+    sns.heatmap(deltaE, cmap='jet', vmin=0, vmax=5.0)
+    plt.axis('off')
+    plt.savefig(f'results/{filename}-deltaE.png')
+    plt.close()
+
 def gen_color_map(hsi, filename):
     plt.figure(figsize=[6, 20])
     plt.subplot(4,1,1)
@@ -175,11 +184,13 @@ def gen_density(hsi, filename):
     # plt.close()
 
 def gen_all_figures(modelnames):
-    arads = TestDataset('/work3/s212645/Spectral_Reconstruction/', 1e8, 0.1, 0.1, False, ['ARAD/'])
+    arads_origin = TestDataset('/work3/s212645/Spectral_Reconstruction/', 1e8, 0.0, 0.053, False, ['ARAD-origin/'], random_split=False)
+    # arads = TestDataset('/work3/s212645/Spectral_Reconstruction/', 1e8, 0.1, 0.1, False, ['ARAD/'])
     # bgus = TestDataset('/work3/s212645/Spectral_Reconstruction/', 1e8, 0.1, 0.1, False, ['BGU/'])
     # caves = TestDataset('/work3/s212645/Spectral_Reconstruction/', 1e8, 0, 1, False, ['CAVE/'])
     # testsets = {'ARAD/': arads, 'BGU/': bgus, 'CAVE/': caves}
-    testsets = {'ARAD/': arads}
+    # testsets = {'ARAD/': arads}
+    testsets = {'ARAD-origin/': arads_origin}
     for k in testsets.keys():
         test_set = testsets[k]
         dataname = k
@@ -203,9 +214,10 @@ def gen_all_figures(modelnames):
                 fake_hsi = scipy.io.loadmat(f'/work3/s212645/Spectral_Reconstruction/FakeHyperSpectrum/{modelname}-{dataname}/{name}')['cube']
                 gen_color_map(fake_hsi, f'{modelname}/{data}-{i}')
                 gen_heatmap(real_hsi, fake_hsi, f'{modelname}/{data}-{i}')
-                real_hsi = testset['cond'].transpose(1,2,0)
-                fake_hsi = scipy.io.loadmat(f'/work3/s212645/Spectral_Reconstruction/FakeHyperSpectrum/{modelname}-{dataname}/{name}')['rgb']
-                gen_heatmap_deltaE(real_hsi, fake_hsi, f'{modelname}/{data}-{i}')
+                gen_heatmap_deltaE_hsi(real_hsi, fake_hsi, f'{modelname}/{data}-{i}')
+                # real_hsi = testset['cond'].transpose(1,2,0)
+                # fake_hsi = scipy.io.loadmat(f'/work3/s212645/Spectral_Reconstruction/FakeHyperSpectrum/{modelname}-{dataname}/{name}')['rgb']
+                # gen_heatmap_deltaE(real_hsi, fake_hsi, f'{modelname}/{data}-{i}')
 
 def gen_all_density(modelnames):
     # modelnames = ['MSTPlusPlus', 'AWAN', 'HSCNN_Plus', 'Restormer', 'pix2pix', 'SSTransformer']
@@ -315,8 +327,13 @@ if __name__ == '__main__':
     # gen_all_density(modelnames)
     # modelnames = ['SSTransformer_no_spatial', 'SSTransformer_no_spectral', 'SSTransformer_no_rpe', 'SSTransformer_ycrcb', 'SSTransformer']
     # modelnames = ['MSTPlusPlus', 'AWAN', 'HSCNN_Plus', 'Restormer', 'pix2pix', 'SSTransformer', 'SSTransformer_no_spatial', 'SSTransformer_no_spectral', 'SSTransformer_no_rpe', 'SSTransformer_ycrcb']
-    modelnames = ['MST_L']
+    # modelnames = ['MST_L']
     # modelnames = ['MPRNet']
-    gen_resutls(modelnames, datanames = ['ARAD/', 'BGU/', 'CAVE'])
+    # gen_resutls(modelnames, datanames = ['ARAD/', 'BGU/', 'CAVE/'])
     # gen_all_figures(modelnames)
     # gen_ablation_chart()
+    # modelnames = ['SSTransformer_orig']
+    modelnames = ['SSTransformer_orig_no_rpe']
+    # modelnames = ['MSTPlusPlus', 'MST_L', 'MPRNet', 'AWAN', 'HSCNN_Plus', 'Restormer']
+    gen_all_figures(modelnames)
+

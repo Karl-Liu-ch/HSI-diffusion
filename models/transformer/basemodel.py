@@ -589,7 +589,7 @@ class TrainModel():
         self.G.eval()
         for name, test_loader in test_loaders.items():
             if name == 'ARAD-orig':
-                save_path = f'/work3/s212645/Spectral_Reconstruction/FakeHyperSpectrum/{modelname}-origin/'
+                save_path = f'/work3/s212645/Spectral_Reconstruction/FakeHyperSpectrum/{modelname}-{name}in/'
             else:
                 save_path = f'/work3/s212645/Spectral_Reconstruction/FakeHyperSpectrum/{modelname}-{name}/'
             if not os.path.exists(save_path):
