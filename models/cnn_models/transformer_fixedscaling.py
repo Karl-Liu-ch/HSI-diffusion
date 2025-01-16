@@ -352,7 +352,8 @@ class Transformer(nn.Module):
         output = self.refinement(output)
         output = self.output_stage(output)
         attention_norm = (attention_norm1 + attention_norm2 + attention_norm3)/3
-        return output[:, :, :h_inp, :w_inp], attention_norm
+        return output[:, :, :h_inp, :w_inp]
+    # , attention_norm
     
 
 if __name__ == '__main__':
