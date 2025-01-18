@@ -333,7 +333,9 @@ if __name__ == '__main__':
     # gen_all_figures(modelnames)
     # gen_ablation_chart()
     # modelnames = ['SSTransformer_orig']
-    modelnames = ['SSTransformer_orig_no_spectral', 'SSTransformer_orig_no_spatial']
+    modelnames = ['SSTransformer_orig', 'SSTransformer_orig_no_spectral', 'SSTransformer_orig_no_spatial', 'SSTransformer_orig_no_rpe']
     # modelnames = ['MSTPlusPlus', 'MST_L', 'MPRNet', 'AWAN', 'HSCNN_Plus', 'Restormer']
+    gen_all_density(modelnames)
     gen_all_figures(modelnames)
+    gen_ablation_chart()
 

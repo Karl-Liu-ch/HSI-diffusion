@@ -1,6 +1,6 @@
 target: models.transformer.basemodel.TrainModel
 params:
-  ckpath: /work3/s212645/Spectral_Reconstruction/checkpoint/CNN_Residual_multistage/
+  ckpath: /work3/s212645/Spectral_Reconstruction/checkpoint/Unet_transformer_serie/
   image_key: 'label'
   cond_key: 'cond'
   # cond_key: 'ycrcb'
@@ -16,7 +16,7 @@ params:
   multi_loss: False
   
   genconfig:
-    target: models.cnn_models.multistage.Multistage
+    target: models.cnn_models.Unet_transformer_serie.UNet
     params:
       input_spatial_size: 128
 

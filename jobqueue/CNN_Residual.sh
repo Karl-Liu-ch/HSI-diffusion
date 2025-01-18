@@ -2,7 +2,7 @@
 ### General options
 ### –- specify queue --
 #BSUB -q gpua100
-#BSUB -R "select[gpu40gb]"
+#BSUB -R "select[gpu80gb]"
 ### -- set the job Name --
 #BSUB -J  CNN_Residual
 ### -- ask for number of cores (default: 1) --
@@ -41,4 +41,9 @@ export PYTHONUNBUFFERED=1
 # python -u train.py -c configs/cnn_residual/cnn_residual_512.yaml --gpu_id 0 --batch_size 128 --mode tuning --learning_rate 1e-5 -r
 
 # python -u train.py -c configs/cnn_residual/cnn_residual_multistage.yaml --gpu_id 0 --batch_size 64 --mode train --learning_rate 2e-4 -r
-python -u train.py -c configs/cnn_residual/transformer.yaml --gpu_id 0 --batch_size 64 --mode train --learning_rate 2e-4 -r
+# python -u train.py -c configs/cnn_residual/cnn_residual_multistage.yaml --gpu_id 0 --batch_size 64 --mode train --learning_rate 2e-4 -r
+
+# python -u train.py -c configs/cnn_residual/transformer.yaml --gpu_id 0 --batch_size 64 --mode train --learning_rate 2e-4 -r
+
+python -u train.py -c configs/cnn_residual/transformer_serie.yaml --gpu_id 0 --batch_size 64 --mode train --learning_rate 2e-4 -r
+# python -u train.py -c configs/cnn_residual/transformer_serie.yaml --gpu_id 0 --batch_size 32 --mode train --learning_rate 2e-4 -r
