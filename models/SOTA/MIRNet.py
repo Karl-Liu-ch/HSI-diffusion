@@ -391,7 +391,7 @@ class RRG(nn.Module):
 ##########################################################################
 ##---------- MIRNet  -----------------------
 class MIRNet(nn.Module):
-    def __init__(self, in_channels=3, out_channels=31, n_feat=31, kernel_size=3, stride=2, n_RRG=2, n_MSRB=1, height=3,
+    def __init__(self, in_channels=3, out_channels=31, n_feat=31, kernel_size=3, stride=2, n_RRG=3, n_MSRB=1, height=3,
                  width=1, bias=False):
         super(MIRNet, self).__init__()
 

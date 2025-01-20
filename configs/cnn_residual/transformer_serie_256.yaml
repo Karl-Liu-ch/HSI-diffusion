@@ -1,6 +1,6 @@
 target: models.transformer.basemodel.TrainModel
 params:
-  ckpath: /work3/s212645/Spectral_Reconstruction/checkpoint/CNN_Residual/
+  ckpath: /work3/s212645/Spectral_Reconstruction/checkpoint/Unet_transformer_serie/
   image_key: 'label'
   cond_key: 'cond'
   # cond_key: 'ycrcb'
@@ -8,9 +8,9 @@ params:
   test_ratio: 0.0
   datanames: ['ARAD-origin/']
   random_split_data: False
-  stride: 256
-  padding_size: 512
-  patch_size: 512
+  stride: 128
+  padding_size: 256
+  patch_size: 256
   total_iter: 50000
   progressive_train: False
   val_in_epoch: True
@@ -18,7 +18,7 @@ params:
   multi_loss: False
 
   genconfig:
-    target: models.transformer.CNN_residual.Residual
+    target: models.cnn_models.Unet_transformer_serie.UNet
     params:
       input_spatial_size: 128
 
@@ -31,12 +31,12 @@ params:
         target: dataset.datasets.TrainDataset
         params:
           data_root: /work3/s212645/Spectral_Reconstruction/
-          crop_size: 512
+          crop_size: 256
           valid_ratio: 0.053
           test_ratio: 0.0
           random_split: False
           arg: True
-          stride: 256
+          stride: 128
           datanames: ['ARAD-origin/']
       validation:
         target: dataset.datasets.ValidDataset

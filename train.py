@@ -63,7 +63,8 @@ if __name__ == '__main__':
                 opt.mode = 'tuning'
             case 'tuning':
                 model.finetuning()
-                opt.mode = 'test'
+                # opt.mode = 'test'
+                opt.mode = 'valid'
             case 'test':
                 model.load_checkpoint(best=True)
                 model.test(modelname)
