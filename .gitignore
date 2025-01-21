@@ -2,6 +2,7 @@
 .ssh/
 *.err
 *.out
+**.png
 results/AWAN/*.png
 results/GT/*.png
 results/HSCNN_Plus/*.png

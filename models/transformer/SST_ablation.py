@@ -631,8 +631,25 @@ class SST_Multi_Stage(nn.Module):
         return x[:, :, :h_inp, :w_inp]
 
 if __name__ == '__main__':
-    model = SST_Multi_Stage(6, 31)
-    # model = LePE_CAT(6, [64, 64], 8, num_heads=1)
-    x = torch.rand([1, 6, 64, 64])
-    y = model(x)
-    print(y.shape)
+    # model = SST_Multi_Stage(6, 31)
+    # # model = LePE_CAT(6, [64, 64], 8, num_heads=1)
+    # x = torch.rand([1, 6, 64, 64])
+    # y = model(x)
+    # print(y.shape)
+
+    model = SSTransformer(use_spatial = True, use_spectral = False, use_rpe = True).to(device)
+    # model.apply(init_weights_uniform)
+    # model = DTN_multi_stage(in_channels=3, out_channels=31, n_feat=31, img_size=[128, 128], window=32).to(device)
+    # input = torch.rand([1, 3, 128, 128]).to(device)
+    # output = model(input.float())
+    # print(output.shape)
+    # summary(model, (3, 256, 256))
+    batch_size = 1
+    input_shape = (batch_size, 3, 128, 128)
+
+    from calflops import calculate_flops
+    flops, macs, params = calculate_flops(model=model, 
+                                        input_shape=input_shape,
+                                        output_as_string=True,
+                                        output_precision=4)
+    print("SSTransformer no spectral FLOPs:%s   MACs:%s   Params:%s \n" %(flops, macs, params))
