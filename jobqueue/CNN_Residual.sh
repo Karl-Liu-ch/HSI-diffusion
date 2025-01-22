@@ -42,8 +42,9 @@ export PYTHONUNBUFFERED=1
 
 # python -u train.py -c configs/cnn_residual/cnn_residual_multistage.yaml --gpu_id 0 --batch_size 64 --mode train --learning_rate 2e-4 -r
 # python -u train.py -c configs/cnn_residual/cnn_residual_multistage_256.yaml --gpu_id 0 --batch_size 64 --mode tuning --learning_rate 4e-5 -r
+# python -u train.py -c configs/cnn_residual/cnn_residual_multistage_512.yaml --gpu_id 0 --batch_size 64 --mode tuning --learning_rate 4e-5 -r
 
 # python -u train.py -c configs/cnn_residual/transformer.yaml --gpu_id 0 --batch_size 64 --mode train --learning_rate 2e-4 -r
 
-python -u train.py -c configs/cnn_residual/transformer_serie.yaml --gpu_id 0 --batch_size 64 --mode train --learning_rate 4e-4 -r
-# python -u train.py -c configs/cnn_residual/transformer_serie_256.yaml --gpu_id 0 --batch_size 64 --mode tuning --learning_rate 4e-5 -r
+python -u train.py -c configs/cnn_residual/Transformer.yaml --gpu_id 0 --batch_size 64 --mode train --learning_rate 4e-4 -r
+# python -u train.py -c configs/cnn_residual/Transformer_256.yaml --gpu_id 0 --batch_size 64 --mode tuning --learning_rate 4e-5 -r
