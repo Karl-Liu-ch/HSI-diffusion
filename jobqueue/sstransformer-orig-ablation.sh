@@ -46,4 +46,8 @@ export PYTHONUNBUFFERED=1
 
 # python -u train.py -c configs/sst/sstransformer_ori_no_spatial.yaml --gpu_id 0 --batch_size 32 --learning_rate 4e-4 --mode train -r
 # python -u train.py -c configs/sst/ablation/sstransformer_ori_no_spatial_256.yaml --gpu_id 0 --batch_size 32 --mode tuning -r --patch_size 256 --learning_rate 4e-5 --stride 128
-python -u train.py -c configs/sst/ablation/sstransformer_ori_no_spatial_512.yaml --gpu_id 0 --batch_size 32 --mode tuning -r --patch_size 512 --learning_rate 4e-5 --stride 256
+# python -u train.py -c configs/sst/ablation/sstransformer_ori_no_spatial_512.yaml --gpu_id 0 --batch_size 32 --mode tuning -r --patch_size 512 --learning_rate 4e-5 --stride 256
+
+python -u train.py -c configs/sst/sstransformer_ori_no_rpe_spatial.yaml --gpu_id 0 --batch_size 32 --learning_rate 4e-4 --mode train -r
+# python -u train.py -c configs/sst/ablation/sstransformer_ori_no_rpe_spatial_256.yaml --gpu_id 0 --batch_size 32 --mode tuning -r --patch_size 256 --learning_rate 4e-5 --stride 128
+# python -u train.py -c configs/sst/ablation/sstransformer_ori_no_rpe_spatial_512.yaml --gpu_id 0 --batch_size 32 --mode tuning -r --patch_size 512 --learning_rate 4e-5 --stride 256
